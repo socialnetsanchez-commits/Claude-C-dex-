@@ -2,74 +2,62 @@
 
 | Archivo | Para qué |
 |---|---|
-| [`SMC_Confirm_Pro.pine`](SMC_Confirm_Pro.pine) | **Principal.** Solo cinco herramientas: perfil de liquidez, zonas SELL/BUY de temporalidades superiores, order blocks swing fuertes con su tasa de reacción medida, SMT y MSS. |
+| [`SMC_Confirm_Pro.pine`](SMC_Confirm_Pro.pine) | **Principal.** Solo tres herramientas: perfil de liquidez del día, zonas BUY/SELL de temporalidades superiores y order blocks swing filtrados por su reacción medida en datos reales. |
 | [`CEP_Confirmation_Engine_Pro.pine`](CEP_Confirmation_Engine_Pro.pine) | Capa de 13 filtros para validar las señales de cualquier otro indicador. |
 
 > No es asesoramiento financiero. Ningún indicador garantiza resultados. Mide siempre fuera de muestra antes de arriesgar dinero.
 
 ## SMC Confirm Pro
 
-Muestra solo cinco herramientas, todas configurables desde los ajustes:
+Solo muestra tres cosas:
 
-| # | Herramienta | Qué ves en el gráfico |
+| Herramienta | Qué ves |
+|---|---|
+| **Perfil de liquidez del día** | Empieza en la primera vela del día y se recalcula en cada tick hasta que empieza el siguiente. Cada fila muestra una barra clara (compras) y una oscura (ventas) con el texto `compras × ventas` (p. ej. `4.3K × 7.18K`) y el total del día debajo. La línea roja continua es el **POC** y las discontinuas son el **VAH/VAL** (value area del 70 %). Las filas fuera del value area se ven más apagadas. |
+| **Zonas BUY / SELL** | Cajas **M15 SELL**, **M30 BUY**, **H1 SELL**... Solo se aceptan las que van a favor de la EMA 50 y de la estructura mayor de su temporalidad. Calculadas con velas cerradas, no repintan. |
+| **Order blocks swing** | Solo los que van a favor de la EMA 200 y de la estructura mayor (4 veces el swing) y tienen volumen por encima de la media en su origen. El texto **OB ★★★** indica cuántos criterios de calidad cumple. |
+
+Todo es personalizable: periodo del perfil, filas, ancho, posición, colores, textos, value area, estilo del POC/VAH/VAL, temporalidades de las zonas, filtros, mitigación, etc.
+
+### Cómo se eligieron los filtros (datos reales)
+
+Se replicó la lógica del indicador en Python y se midió la **reacción**: tras el primer toque, el precio se aleja al menos 1,5 ATR antes de que una vela cierre al otro lado de la zona. Si las dos cosas pasan en la misma vela, cuenta como fallo.
+
+- **Datos:** EUR/USD 1 h, S&P 500 diario y Google diario.
+- **Separación:** el 60 % inicial (dentro de muestra) se usó para elegir y el 40 % final (fuera de muestra) para comprobar.
+
+| | Dentro de muestra | Fuera de muestra |
 |---|---|---|
-| 1 | **Perfil de liquidez** | Histograma de volumen por precio del día, la semana, el mes o las últimas N velas: gris para compras y rojo para ventas. Incluye la línea **POC** con su precio, el value area (VAH/VAL) y los POC de periodos anteriores, que siguen extendiéndose mientras ningún precio los toque (POC vírgenes). |
-| 2 | **Zonas SELL / BUY** | Cajas **M15 SELL**, **M30 SELL**, **H1 BUY**... con línea media discontinua. Muestran la última zona sin mitigar de cada temporalidad, calculada solo con velas cerradas (no repinta). |
-| 3 | **Order blocks swing fuertes** | Solo los OB que cumplen los filtros de calidad. El texto **OB ★★** indica cuántos criterios cumple, y una tabla mide cuántos reaccionaron de verdad. |
-| 4 | **SMT** | Línea entre dos máximos (o mínimos) cuando el gráfico y el activo correlacionado no confirman el mismo movimiento. |
-| 5 | **MSS** | Cambio de estructura con etiqueta rellena **MSS**: línea continua para el swing y discontinua para el interno. No se muestra ni BOS ni CHoCH. |
+| OB con los filtros anteriores (desplazamiento + FVG) | 50 % (243 toques) | 43 % (158) |
+| **OB con EMA 200 + estructura mayor + volumen** | **66 %** (167) | **66 %** (82) |
+| Zonas sin filtro | 64 % (133) | 77 % (93) |
+| **Zonas con EMA 50 + estructura mayor de su TF** | **68,5 %** (73) | **84 %** (50) |
 
-### Cómo se decide que un OB es "fuerte"
+**Lo que no funcionó** y por eso se quitó o es opcional:
 
-Un OB se dibuja solo si cumple todos los filtros activos:
+- El FVG y el desplazamiento rebajaban la reacción.
+- El descuento/premium no aportaba.
+- El barrido de liquidez era inestable.
+- "Solo BOS" queda como opción: mejora fuera de muestra pero no dentro.
 
-- **Desplazamiento** (por defecto): en las 3 velas siguientes al OB, el precio se aleja al menos 1 ATR. Para ser más estricto, súbelo a 1,5.
-- **FVG** (por defecto): esas mismas velas dejan un hueco de liquidez.
-- **Altura máxima** (por defecto): el OB mide como mucho 3 ATR, para evitar zonas enormes.
-- **Barrido de liquidez** (opcional): el OB rompe los mínimos (o máximos) de las 20 velas anteriores.
-- **Volumen** (opcional): las velas del impulso tienen volumen por encima de la media.
+**Advertencia honesta:** no son datos de NQ en 5 minutos, y las muestras son de decenas o cientos de casos. Ningún porcentaje está garantizado en tu mercado. Por eso el indicador trae una **tabla que mide la reacción en tu propio gráfico**. Con menos de 30 toques aparece "poca muestra".
 
-Cada OB se extiende hasta que una vela cierra al otro lado (o lo atraviesa con la mecha, si eliges *Mecha*).
+### Errores corregidos en esta versión
 
-**Tabla de reacción:** cuenta los OB que, tras el primer toque, se alejaron al menos 1,5 ATR antes de ser mitigados. Si en la misma vela ocurren las dos cosas, cuenta como fallo. Es una medición en tu gráfico, no una promesa. Con menos de 30 casos aparece "muestra pequeña" y el porcentaje todavía no significa nada.
-
-### Cómo se detecta el SMT
-
-- En **modo automático** compara NQ↔ES, YM/RTY→ES, GC↔SI, XAUUSD↔XAGUSD, EURUSD↔GBPUSD y NAS100/US30→SPX500. Si tu activo no está en la lista, usa el símbolo manual.
-- **SMT bajista:** en dos máximos seguidos, uno de los activos hace un máximo más alto y el otro no.
-- **SMT alcista:** lo mismo con los mínimos.
-- Para activos con correlación inversa, como EURUSD frente a DXY, activa *Correlación inversa*.
-- El activo comparado necesita datos en tu cuenta de TradingView. Si no los tiene, simplemente no aparecen SMT.
-
-### Valores iniciales
-
-| Ajuste | NQ / ES 5 m | XAUUSD 15 m |
-|---|---|---|
-| Perfil · periodo | Día | Día |
-| Zonas · temporalidades | M15, M30, H1 | M30, H1, H4 |
-| OB · longitud de swing | 25 | 20 |
-| SMT · comparación | Automático (ES) | Automático (XAGUSD) |
-| MSS · swing / interno | 25 / 5 | 20 / 5 |
-
-### Alertas
-
-- **Confluencia bajista o alcista:** el precio toca una zona SELL o un OB bajista, aparece un SMT bajista y luego un MSS bajista, todo dentro de 20 velas (y al revés para compras). Es la alerta más selectiva.
-- **Alertas sueltas:** MSS swing e interno, SMT, nuevo OB, precio toca un OB y precio entra en una zona SELL o BUY.
+- **El toque inmediato inflaba la estadística:** un OB recién creado podía contar como "tocado" sin que el precio hubiera salido antes de la zona. Ahora el toque solo cuenta tras salir por completo, y lo mismo vale para las zonas.
+- **Las zonas no se medían:** ahora tienen su propia medición.
+- **La estructura mayor no seguía al swing:** ahora es 4 veces la longitud del swing y se ajusta si cambias esa longitud.
 
 ### Comprobaciones hechas
 
-- El código pasa un analizador sintáctico de Pine Script.
-- La indentación y el orden de las declaraciones están revisados.
-- Las 80 funciones integradas que usa existen en Pine v6.
+- Pasa el analizador sintáctico de Pine Script.
+- Revisados: indentación, declaraciones antes de uso, número de argumentos y tamaño de las tuplas.
 - No hay lecturas del historial dentro de llamadas condicionales.
-- La lógica de estructura, OB y value area se simuló en Python con datos sintéticos.
-- No se ha podido compilar en el propio TradingView desde este entorno. Si el editor muestra un error, pégalo y se corrige.
+- No se ha podido compilar dentro de TradingView desde este entorno. Si el editor muestra un error, pégalo y se corrige.
 
-### Limitaciones
+### Alertas
 
-- Los MSS y SMT se confirman unas velas después del pivote (la longitud elegida). Así no repintan.
-- En CFD como XAUUSD el volumen es de ticks: el perfil es una aproximación de dónde se negoció, no volumen real de contratos.
-- Cada temporalidad muestra solo su última zona SELL y BUY sin mitigar.
+Nuevo OB alcista/bajista · Precio vuelve a un OB alcista/bajista · Precio vuelve a una zona BUY/SELL.
 
 ---
 
