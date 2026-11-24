@@ -1,15 +1,12 @@
 //@version=6
 // ════════════════════════════════════════════════════════════════════════════
 //  SMC Confirm Pro · Pine Script v6
-//  Cuatro herramientas:
-//   1) Perfil de liquidez de cada día (compradores, vendedores, POC, VAH y VAL)
-//      y el del día en curso, que se recalcula en cada tick.
-//   2) Zonas BUY / SELL de temporalidades superiores ("M15 SELL", "H1 BUY"...)
+//  Dos herramientas:
+//   1) Zonas BUY / SELL de temporalidades superiores ("M15 SELL", "H1 BUY"...)
 //      filtradas a favor de la EMA 50 y de la estructura mayor de esa TF.
-//   3) Order blocks swing filtrados a favor de la EMA 200, de la estructura
-//      mayor y con volumen por encima de la media en su origen.
-//   4) iFVG: un FVG que el precio cierra al otro lado cambia de papel
-//      (FVG alcista roto = resistencia, FVG bajista roto = soporte).
+//   2) Order blocks swing filtrados a favor de la EMA 200, de la estructura
+//      mayor y con volumen por encima de la media en su origen. Los OB A+
+//      están además dentro de una zona BUY / SELL de temporalidad superior.
 //  Los filtros se eligieron midiendo la reacción en datos reales (EURUSD H1,
 //  S&P 500 y GOOG diarios, separando dentro y fuera de muestra). Una tabla
 //  mide la reacción en TU gráfico: es una estadística, no una promesa.
@@ -19,11 +16,9 @@
 indicator("SMC Confirm Pro", shorttitle = "SMC Pro", overlay = true, max_boxes_count = 500, max_lines_count = 500, max_labels_count = 500, max_bars_back = 500)
 
 // ─────────────────────────────── Constantes ────────────────────────────────
-const string G_VP = "1 · Perfil de liquidez"
-const string G_ZN = "2 · Zonas BUY / SELL"
-const string G_OB = "3 · Order blocks swing"
-const string G_IF = "4 · iFVG (FVG invertidos)"
-const string G_ST = "5 · Medición de la reacción"
+const string G_ZN = "1 · Zonas BUY / SELL"
+const string G_OB = "2 · Order blocks swing"
+const string G_ST = "3 · Medición de la reacción"
 
 const string ST_SOLID    = "Continua"
 const string ST_DASHED   = "Discontinua"
@@ -36,57 +31,12 @@ const string POS_TR      = "Arriba derecha"
 const string POS_TL      = "Arriba izquierda"
 const string POS_BR      = "Abajo derecha"
 const string POS_BL      = "Abajo izquierda"
-const string VP_DAY      = "Día"
-const string VP_WEEK     = "Semana"
-const string VP_MONTH    = "Mes"
-const string VP_BARS     = "Últimas N velas"
-const string VP_AT_START = "Inicio del periodo"
-const string VP_AT_RIGHT = "A la derecha del precio"
-const string VP_SPLIT    = "Compras / ventas"
-const string VP_TOTAL    = "Total"
 const string MIT_CLOSE   = "Cierre"
 const string MIT_WICK    = "Mecha"
 const int    BUF         = 400    // velas guardadas para localizar order blocks
 
 // ═══════════════════════════════ INPUTS ════════════════════════════════════
-// 1 · Perfil de liquidez
-bool   vpShow      = input.bool(true, "Mostrar perfil de liquidez", group = G_VP)
-string vpAnchor    = input.string(VP_DAY, "Periodo", options = [VP_DAY, VP_WEEK, VP_MONTH, VP_BARS], group = G_VP, inline = "anc", tooltip = "Día: empieza en la primera vela de la sesión diaria del símbolo y se recalcula en cada tick hasta que empieza el día siguiente.")
-int    vpLookback  = input.int(300, "N velas", minval = 20, maxval = 5000, group = G_VP, inline = "anc")
-int    vpPastDays  = input.int(4, "Perfiles de periodos anteriores", minval = 0, maxval = 8, group = G_VP, inline = "past", tooltip = "Cada periodo terminado deja dibujado su perfil completo (compradores, vendedores, POC, VAH y VAL). TradingView limita las cajas a 500, por eso el máximo es 8.")
-bool   vpPastText  = input.bool(false, "con texto", group = G_VP, inline = "past")
-int    vpRows      = input.int(25, "Filas", minval = 5, maxval = 100, group = G_VP)
-int    vpWidth     = input.int(30, "Ancho máximo (barras)", minval = 5, maxval = 300, group = G_VP)
-string vpPlace     = input.string(VP_AT_START, "Posición", options = [VP_AT_START, VP_AT_RIGHT], group = G_VP, inline = "pos")
-int    vpOffset    = input.int(10, "separación (barras)", minval = 0, maxval = 100, group = G_VP, inline = "pos")
-string vpMode      = input.string(VP_SPLIT, "Barras", options = [VP_SPLIT, VP_TOTAL], group = G_VP)
-float  vpGap       = input.float(10, "Separación entre filas (%)", minval = 0, maxval = 80, step = 5, group = G_VP)
-color  vpBuyCol    = input.color(color.new(#e0e0e0, 0), "Compras", group = G_VP, inline = "vpc")
-color  vpSellCol   = input.color(color.new(#1c1c1c, 0), "Ventas", group = G_VP, inline = "vpc")
-color  vpTotCol    = input.color(color.new(#9e9e9e, 0), "Total", group = G_VP, inline = "vpc")
-bool   vpTextOn    = input.bool(true, "Texto compras × ventas", group = G_VP, inline = "vtx")
-color  vpTextCol   = input.color(#2962ff, "", group = G_VP, inline = "vtx")
-string vpTextSize  = input.string(SZ_SMALL, "", options = [SZ_AUTO, SZ_TINY, SZ_SMALL, SZ_NORMAL], group = G_VP, inline = "vtx")
-bool   vpTotalOn   = input.bool(true, "Total del periodo debajo", group = G_VP, inline = "vtt")
-color  vpTotalCol  = input.color(#651fff, "", group = G_VP, inline = "vtt")
-bool   vaShow      = input.bool(true, "Value area", group = G_VP, inline = "va")
-float  vaPct       = input.float(70, "%", minval = 10, maxval = 100, step = 5, group = G_VP, inline = "va")
-int    vaOutTransp = input.int(45, "Transparencia extra fuera del value area", minval = 0, maxval = 100, group = G_VP)
-bool   vaLines     = input.bool(true, "Líneas VAH / VAL", group = G_VP, inline = "val")
-color  vaLineCol   = input.color(#c62828, "", group = G_VP, inline = "val")
-int    vaLineWidth = input.int(1, "", minval = 1, maxval = 5, group = G_VP, inline = "val")
-string vaLineStyle = input.string(ST_DASHED, "", options = [ST_SOLID, ST_DASHED, ST_DOTTED], group = G_VP, inline = "val")
-bool   pocShow     = input.bool(true, "POC", group = G_VP, inline = "poc")
-color  pocCol      = input.color(#c62828, "", group = G_VP, inline = "poc")
-int    pocWidth    = input.int(1, "", minval = 1, maxval = 5, group = G_VP, inline = "poc")
-string pocStyle    = input.string(ST_SOLID, "", options = [ST_SOLID, ST_DASHED, ST_DOTTED], group = G_VP, inline = "poc")
-bool   pocExtend   = input.bool(false, "Extender POC a la derecha", group = G_VP, inline = "poc2")
-bool   pocLabel    = input.bool(false, "Precio del POC", group = G_VP, inline = "poc2")
-bool   prevPocShow = input.bool(false, "POC de periodos anteriores", group = G_VP, inline = "pp")
-int    prevPocMax  = input.int(5, "cantidad", minval = 1, maxval = 50, group = G_VP, inline = "pp")
-bool   nakedPoc    = input.bool(true, "Extender POC anteriores hasta que el precio los toque", group = G_VP)
-
-// 2 · Zonas BUY / SELL de temporalidades superiores
+// 1 · Zonas BUY / SELL de temporalidades superiores
 bool   znShow     = input.bool(true, "Mostrar zonas", group = G_ZN, inline = "zs")
 bool   znSellOn   = input.bool(true, "SELL", group = G_ZN, inline = "zs")
 bool   znBuyOn    = input.bool(true, "BUY", group = G_ZN, inline = "zs")
@@ -111,7 +61,7 @@ string znMidStyle = input.string(ST_DASHED, "", options = [ST_SOLID, ST_DASHED, 
 color  znTxtCol   = input.color(#787b86, "Texto", group = G_ZN, inline = "zt")
 string znTxtSize  = input.string(SZ_SMALL, "", options = [SZ_AUTO, SZ_TINY, SZ_SMALL, SZ_NORMAL], group = G_ZN, inline = "zt")
 
-// 3 · Order blocks swing
+// 2 · Order blocks swing
 bool   obShow      = input.bool(true, "Mostrar order blocks swing", group = G_OB)
 int    obSwingLen  = input.int(25, "Longitud de swing", minval = 5, maxval = 100, group = G_OB)
 int    obBigMult   = input.int(4, "Estructura mayor = swing ×", minval = 2, maxval = 10, group = G_OB)
@@ -131,24 +81,8 @@ bool   obMidOn     = input.bool(true, "Línea del 50 % (referencia de entrada)",
 string obMidStyle  = input.string(ST_DASHED, "", options = [ST_SOLID, ST_DASHED, ST_DOTTED], group = G_OB, inline = "omd")
 bool   obAplusOn   = input.bool(true, "Resaltar OB A+ (dentro de una zona BUY / SELL de TF superior)", group = G_OB, tooltip = "En las pruebas con datos reales, los OB que coinciden con una zona de temporalidad superior reaccionaron más (84 % frente a 63 % dentro de muestra), aunque fuera de muestra solo hubo 2 casos. Se cuentan aparte en la tabla.")
 
-// 4 · iFVG
-bool   ifShow      = input.bool(true, "Mostrar iFVG", group = G_IF)
-float  ifMinAtr    = input.float(0.25, "Hueco mínimo del FVG (ATR ×)", minval = 0, step = 0.05, group = G_IF)
-bool   ifNeedEma   = input.bool(true, "Solo a favor de la EMA 200", group = G_IF)
-bool   ifNeedBig   = input.bool(true, "Solo a favor de la estructura mayor", group = G_IF)
-float  ifMaxAtr    = input.float(3.0, "Altura máxima (ATR ×)", minval = 0.2, step = 0.1, group = G_IF)
-int    ifMaxAge    = input.int(300, "Antigüedad máx. del FVG para invertirse (velas)", minval = 10, maxval = 2000, group = G_IF)
-int    ifMaxActive = input.int(5, "Máx. activos por lado", minval = 1, maxval = 20, group = G_IF)
-string ifMitig     = input.string(MIT_CLOSE, "Invalidación", options = [MIT_CLOSE, MIT_WICK], group = G_IF, inline = "im")
-bool   ifDelMitig  = input.bool(true, "borrar invalidados", group = G_IF, inline = "im")
-color  ifBullCol   = input.color(color.new(#089981, 80), "Alcista", group = G_IF, inline = "ic")
-color  ifBearCol   = input.color(color.new(#f23645, 80), "Bajista", group = G_IF, inline = "ic")
-bool   ifTextOn    = input.bool(true, "Texto iFVG", group = G_IF, inline = "it")
-color  ifTxtCol    = input.color(#787b86, "", group = G_IF, inline = "it")
-bool   ifMidOn     = input.bool(false, "Línea del 50 %", group = G_IF)
-
-// 5 · Medición de la reacción
-bool   statsOn  = input.bool(true, "Tabla de reacción de OB, zonas e iFVG", group = G_ST, tooltip = "Cuenta, tras el primer toque (el precio debe haber salido antes de la zona), cuántas veces el precio se aleja al menos X ATR antes de que una vela cierre al otro lado. Si ambas cosas pasan en la misma vela, cuenta como fallo.")
+// 3 · Medición de la reacción
+bool   statsOn  = input.bool(true, "Tabla de reacción de OB y zonas", group = G_ST, tooltip = "Cuenta, tras el primer toque (el precio debe haber salido antes de la zona), cuántas veces el precio se aleja al menos X ATR antes de que una vela cierre al otro lado. Si ambas cosas pasan en la misma vela, cuenta como fallo.")
 float  reactAtr = input.float(1.5, "Reacción mínima (ATR ×)", minval = 0.25, step = 0.25, group = G_ST)
 string statsPos = input.string(POS_BR, "Posición", options = [POS_TR, POS_TL, POS_BR, POS_BL], group = G_ST)
 
@@ -174,31 +108,12 @@ type OB
     int   touchBar = na
     bool  resolved = false
 
-type PocLine
-    line  ln
-    float price
-    bool  naked = true
-
-// FVG pendiente de invertirse
-type Gap
-    float top
-    float btm
-    int   left
-
-// Dibujos de un perfil completo (para poder borrarlo entero)
-type DayProfile
-    array<box>   bxs
-    array<line>  lns
-    array<label> lbs
-
 // ═════════════════════════════ FUNCIONES ═══════════════════════════════════
 f_lineStyle(string s) => s == ST_SOLID ? line.style_solid : s == ST_DASHED ? line.style_dashed : line.style_dotted
 
 f_size(string s) => s == SZ_AUTO ? size.auto : s == SZ_TINY ? size.tiny : s == SZ_SMALL ? size.small : size.normal
 
 f_pos(string s) => s == POS_TR ? position.top_right : s == POS_TL ? position.top_left : s == POS_BR ? position.bottom_right : position.bottom_left
-
-f_fmtVol(float v) => v >= 1000000 ? str.tostring(v / 1000000, "#.##") + "M" : v >= 1000 ? str.tostring(v / 1000, "#.##") + "K" : str.tostring(v, "#")
 
 // Estructura de mercado. Un pivote máximo se confirma cuando el máximo de hace
 // `len` velas supera a todas las posteriores (igual para mínimos).
@@ -378,7 +293,7 @@ f_trackZone(float top, float btm, int t, bool bull, bool enabled) =>
             zDone := true
     [win, loss, first]
 
-// Gestiona los OB / iFVG activos: salida de la zona, primer toque, reacción y
+// Gestiona los OB activos: salida de la zona, primer toque, reacción y
 // mitigación. Devuelve los resultados de todos y, aparte, los de los OB A+.
 f_manageOBs(array<OB> arr, string mitMode, bool delMit) =>
     int  wins    = 0
@@ -435,7 +350,6 @@ f_manageOBs(array<OB> arr, string mitMode, bool delMit) =>
 // ¿Se solapa el OB con una zona de TF superior válida?
 f_ov(bool ok, float zTop, float zBtm, float top, float btm) => ok and not na(zTop) and not na(zBtm) and math.max(zBtm, btm) <= math.min(zTop, top)
 
-
 f_overlaps(array<OB> arr, float top, float btm) =>
     bool hit = false
     if array.size(arr) > 0
@@ -444,149 +358,7 @@ f_overlaps(array<OB> arr, float top, float btm) =>
                 hit := true
     hit
 
-// Crea un iFVG (dir 1 = soporte alcista, -1 = resistencia bajista)
-f_addIfvg(array<OB> arr, float top, float btm, int leftIdx, int dir) =>
-    color c  = dir == 1 ? ifBullCol : ifBearCol
-    float mp = (top + btm) / 2
-    box   bx = box.new(leftIdx, top, bar_index, btm, border_color = color.new(c, 40), bgcolor = c, text = ifTextOn ? "iFVG" : "", text_color = ifTxtCol, text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_center)
-    line  md = ifMidOn ? line.new(leftIdx, mp, bar_index, mp, color = color.new(c, 20), style = line.style_dashed) : na
-    array.unshift(arr, OB.new(bx = bx, mid = md, top = top, btm = btm, dir = dir, atrRef = atr))
-    if array.size(arr) > ifMaxActive
-        array.pop(arr)
-    true
-
-// Revisa los FVG pendientes: los caducados se descartan y los que una vela
-// cierra al otro lado se convierten en iFVG de dirección contraria.
-f_invertGaps(array<Gap> gaps, array<OB> target, bool gapBull, int bigT) =>
-    bool created = false
-    int  n       = array.size(gaps)
-    if n > 0
-        for i = n - 1 to 0
-            Gap g = array.get(gaps, i)
-            if bar_index - g.left > ifMaxAge
-                array.remove(gaps, i)
-            else if gapBull ? close < g.btm : close > g.top
-                array.remove(gaps, i)
-                int  nd = gapBull ? -1 : 1
-                bool ok = (not ifNeedEma or (nd == 1 ? close > ema200 : close < ema200)) and (not ifNeedBig or bigT == nd) and g.top - g.btm <= ifMaxAtr * atr
-                if ok and not f_overlaps(target, g.top, g.btm)
-                    f_addIfvg(target, g.top, g.btm, g.left, nd)
-                    created := true
-    created
-
-// Perfil: reparte el volumen de cada vela entre las filas de precio que cubre
-f_profile(array<float> hs, array<float> ls, array<float> vs, array<bool> ups, int rows) =>
-    float top   = array.max(hs)
-    float btm   = array.min(ls)
-    float step  = (top - btm) / rows
-    array<float> buyV  = array.new<float>(rows, 0.0)
-    array<float> sellV = array.new<float>(rows, 0.0)
-    if step > 0
-        for i = 0 to array.size(hs) - 1
-            float h   = array.get(hs, i)
-            float l   = array.get(ls, i)
-            float v   = array.get(vs, i)
-            bool  up  = array.get(ups, i)
-            int   r0  = math.max(0, math.min(rows - 1, int(math.floor((l - btm) / step))))
-            int   r1  = math.max(0, math.min(rows - 1, int(math.floor((h - btm) / step))))
-            float rng = h - l
-            for r = r0 to r1
-                float rowLo = btm + r * step
-                float share = rng > 0 ? math.max(math.min(h, rowLo + step) - math.max(l, rowLo), 0) / rng : 1.0 / (r1 - r0 + 1)
-                if up
-                    array.set(buyV, r, array.get(buyV, r) + v * share)
-                else
-                    array.set(sellV, r, array.get(sellV, r) + v * share)
-    [btm, step, buyV, sellV]
-
-f_pocRow(array<float> buyV, array<float> sellV) =>
-    float maxV = 0.0
-    int   row  = -1
-    for r = 0 to array.size(buyV) - 1
-        float t = array.get(buyV, r) + array.get(sellV, r)
-        if t > maxV
-            maxV := t
-            row  := r
-    [row, maxV]
-
-// Value area: crece desde el POC hacia la fila vecina con más volumen
-f_valueArea(array<float> tot, int pocRow, float pct) =>
-    int   n      = array.size(tot)
-    float target = array.sum(tot) * pct / 100
-    float acc    = array.get(tot, pocRow)
-    int   up     = pocRow
-    int   dn     = pocRow
-    while acc < target and (up < n - 1 or dn > 0)
-        float vUp = up < n - 1 ? array.get(tot, up + 1) : -1.0
-        float vDn = dn > 0 ? array.get(tot, dn - 1) : -1.0
-        if vUp >= vDn
-            up  += 1
-            acc += vUp
-        else
-            dn  -= 1
-            acc += vDn
-    [up, dn]
-
-f_fade(color c, bool keep) => keep ? c : color.new(c, math.min(100, color.t(c) + vaOutTransp))
-
-// Dibuja un perfil completo: barras de compradores y vendedores por fila,
-// texto opcional (compras × ventas y total), POC y líneas VAH / VAL.
-f_drawProfile(array<float> hs, array<float> ls, array<float> vs, array<bool> ups, int x0, int xEnd, int wMax, bool withText, bool isCurrent) =>
-    DayProfile dp = DayProfile.new(array.new<box>(), array.new<line>(), array.new<label>())
-    [cBtm, cStep, cBuy, cSell] = f_profile(hs, ls, vs, ups, vpRows)
-    array<float> cTot = array.new<float>(vpRows, 0.0)
-    for r = 0 to vpRows - 1
-        array.set(cTot, r, array.get(cBuy, r) + array.get(cSell, r))
-    float cMax = array.max(cTot)
-    if cMax > 0 and cStep > 0
-        int pocRow = array.indexof(cTot, cMax)
-        [vaUp, vaDn] = f_valueArea(cTot, pocRow, vaPct)
-        string tSize = f_size(vpTextSize)
-        for r = 0 to vpRows - 1
-            float lo   = cBtm + r * cStep
-            float hi   = lo + cStep * (1 - vpGap / 100)
-            float bv   = array.get(cBuy, r)
-            float sv   = array.get(cSell, r)
-            bool  inVA = not vaShow or (r >= vaDn and r <= vaUp)
-            if vpMode == VP_TOTAL
-                int w = int(math.round((bv + sv) / cMax * wMax))
-                if w > 0
-                    array.push(dp.bxs, box.new(x0, hi, x0 + w, lo, border_color = C_NONE, bgcolor = f_fade(vpTotCol, inVA)))
-            else
-                int wB = int(math.round(bv / cMax * wMax))
-                int wS = int(math.round(sv / cMax * wMax))
-                if wB > 0
-                    array.push(dp.bxs, box.new(x0, hi, x0 + wB, lo, border_color = C_NONE, bgcolor = f_fade(vpBuyCol, inVA)))
-                if wS > 0
-                    array.push(dp.bxs, box.new(x0 + wB, hi, x0 + wB + wS, lo, border_color = C_NONE, bgcolor = f_fade(vpSellCol, inVA)))
-            if withText
-                array.push(dp.bxs, box.new(x0, hi, x0 + wMax, lo, border_color = C_NONE, bgcolor = C_NONE, text = f_fmtVol(bv) + " × " + f_fmtVol(sv), text_color = vpTextCol, text_size = tSize, text_halign = text.align_left, text_valign = text.align_center, text_wrap = text.wrap_none))
-        if withText and vpTotalOn
-            float tHi = cBtm - cStep * 0.1
-            float tLo = cBtm - cStep * 1.1
-            array.push(dp.bxs, box.new(x0, tHi, x0 + wMax, tLo, border_color = C_NONE, bgcolor = C_NONE, text = f_fmtVol(array.sum(cBuy)) + " × " + f_fmtVol(array.sum(cSell)), text_color = vpTotalCol, text_size = tSize, text_halign = text.align_left, text_valign = text.align_center, text_wrap = text.wrap_none))
-        if pocShow
-            float pocPrice = cBtm + (pocRow + 0.5) * cStep
-            array.push(dp.lns, line.new(x0, pocPrice, xEnd, pocPrice, color = pocCol, width = pocWidth, style = f_lineStyle(pocStyle), extend = isCurrent and pocExtend ? extend.right : extend.none))
-            if isCurrent and pocLabel
-                array.push(dp.lbs, label.new(xEnd, pocPrice, "POC " + str.tostring(pocPrice, format.mintick), style = label.style_label_left, color = C_NONE, textcolor = pocCol, size = size.small))
-        if vaShow and vaLines
-            float vah = cBtm + (vaUp + 1) * cStep
-            float val = cBtm + vaDn * cStep
-            array.push(dp.lns, line.new(x0, vah, xEnd, vah, color = vaLineCol, width = vaLineWidth, style = f_lineStyle(vaLineStyle)))
-            array.push(dp.lns, line.new(x0, val, xEnd, val, color = vaLineCol, width = vaLineWidth, style = f_lineStyle(vaLineStyle)))
-    dp
-
-f_deleteProfile(DayProfile dp) =>
-    for b in dp.bxs
-        box.delete(b)
-    for l in dp.lns
-        line.delete(l)
-    for lb in dp.lbs
-        label.delete(lb)
-    true
-
-// ═════════════════════════════ 2 · ZONAS BUY / SELL (datos) ════════════════
+// ═════════════════════════════ 1 · ZONAS BUY / SELL (datos) ════════════════
 // Se calculan antes que los OB para poder detectar la confluencia (OB A+)
 int  chartSec = timeframe.in_seconds()
 bool tf1Val   = tf1On and timeframe.in_seconds(tf1) >= chartSec
@@ -604,7 +376,7 @@ bool znWick   = znMitig == MIT_WICK
 [z3BearTop, z3BearBtm, z3BearT, z3BullTop, z3BullBtm, z3BullT] = request.security(syminfo.tickerid, tf3, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
 [z4BearTop, z4BearBtm, z4BearT, z4BullTop, z4BullBtm, z4BullT] = request.security(syminfo.tickerid, tf4, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
 
-// ═════════════════════════════ 3 · ORDER BLOCKS SWING ══════════════════════
+// ═════════════════════════════ 2 · ORDER BLOCKS SWING ══════════════════════
 [obTrend, obUp, obDn, obShift, obIdx, obLvl] = f_structure(obSwingLen)
 [bigTrend, bigUp, bigDn, bigShift, bigIdx, bigLvl] = f_structure(obBigLen)
 
@@ -658,38 +430,7 @@ if obShow and (obUp or obDn)
         newBearOB := obDn
         newAplus  := aplus
 
-// ═════════════════════════════ 4 · iFVG ════════════════════════════════════
-var array<Gap> gapsUp   = array.new<Gap>()   // FVG alcistas pendientes de invertirse
-var array<Gap> gapsDn   = array.new<Gap>()   // FVG bajistas pendientes de invertirse
-var array<OB>  ifBull   = array.new<OB>()    // iFVG alcistas (soporte)
-var array<OB>  ifBear   = array.new<OB>()    // iFVG bajistas (resistencia)
-var int        ifWins   = 0
-var int        ifLosses = 0
-float h2 = high[2]
-float l2 = low[2]
-
-// 1) Toques, reacciones e invalidaciones de los iFVG activos
-[ibW, ibL, ibWA, ibLA, ibFirst, ibFirstA] = f_manageOBs(ifBull, ifMitig, ifDelMitig)
-[isW, isL, isWA, isLA, isFirst, isFirstA] = f_manageOBs(ifBear, ifMitig, ifDelMitig)
-ifWins   += ibW + isW
-ifLosses += ibL + isL
-
-// 2) Inversión de FVG y registro de los FVG nuevos de esta vela
-bool newIfBear = false
-bool newIfBull = false
-if ifShow
-    newIfBear := f_invertGaps(gapsUp, ifBear, true, bigTrend)
-    newIfBull := f_invertGaps(gapsDn, ifBull, false, bigTrend)
-    if low > h2 and low - h2 >= ifMinAtr * atr
-        array.unshift(gapsUp, Gap.new(low, h2, bar_index - 2))
-        if array.size(gapsUp) > 30
-            array.pop(gapsUp)
-    if high < l2 and l2 - high >= ifMinAtr * atr
-        array.unshift(gapsDn, Gap.new(l2, high, bar_index - 2))
-        if array.size(gapsDn) > 30
-            array.pop(gapsDn)
-
-// ═════════════════════════════ 2 · ZONAS BUY / SELL (medición y dibujo) ════
+// ═════════════════════════════ 1 · ZONAS BUY / SELL (medición y dibujo) ════
 // Medición de la reacción de cada zona visible (8 = 4 temporalidades × 2 lados)
 [w1s, l1s, f1s] = f_trackZone(z1BearTop, z1BearBtm, z1BearT, false, tf1Ok and znSellOn)
 [w1b, l1b, f1b] = f_trackZone(z1BullTop, z1BullBtm, z1BullT, true, tf1Ok and znBuyOn)
@@ -725,77 +466,6 @@ if znShow and barstate.islast
     f_zone(znBoxes, znLines, tf4Ok and znSellOn, z4BearTop, z4BearBtm, z4BearT, f_tfLabel(tf4) + " SELL", znSellCol)
     f_zone(znBoxes, znLines, tf4Ok and znBuyOn, z4BullTop, z4BullBtm, z4BullT, f_tfLabel(tf4) + " BUY", znBuyCol)
 
-// ═════════════════════════════ 1 · PERFIL DE LIQUIDEZ ══════════════════════
-string vpTf        = vpAnchor == VP_DAY ? "D" : vpAnchor == VP_WEEK ? "W" : "M"
-bool   vpPeriodic  = vpAnchor != VP_BARS
-bool   vpAllowed   = vpShow and (not vpPeriodic or chartSec < timeframe.in_seconds(vpTf))
-bool   vpNewPeriod = vpPeriodic and timeframe.change(vpTf)
-
-var array<float>   vpH      = array.new<float>()
-var array<float>   vpL      = array.new<float>()
-var array<float>   vpV      = array.new<float>()
-var array<bool>    vpUp     = array.new<bool>()
-var int            vpStart  = na
-var array<PocLine> prevPocs = array.new<PocLine>()
-var array<DayProfile> pastProfiles = array.new<DayProfile>()
-
-if vpAllowed
-    if vpNewPeriod
-        // POC del periodo que termina (opcional): queda dibujado como referencia
-        if prevPocShow and array.size(vpH) > 0 and not na(vpStart)
-            [pBtm, pStep, pBuy, pSell] = f_profile(vpH, vpL, vpV, vpUp, vpRows)
-            [pRow, pMax] = f_pocRow(pBuy, pSell)
-            if pRow >= 0 and pMax > 0
-                float pPoc  = pBtm + (pRow + 0.5) * pStep
-                line  pLine = line.new(vpStart, pPoc, bar_index - 1, pPoc, color = pocCol, width = pocWidth, style = f_lineStyle(pocStyle))
-                array.unshift(prevPocs, PocLine.new(ln = pLine, price = pPoc))
-                if array.size(prevPocs) > prevPocMax
-                    PocLine oldPoc = array.pop(prevPocs)
-                    line.delete(oldPoc.ln)
-        // Perfil completo del periodo que termina (se guardan los N últimos)
-        if vpPastDays > 0 and array.size(vpH) > 0 and not na(vpStart)
-            int dayBars = bar_index - 1 - vpStart
-            array.push(pastProfiles, f_drawProfile(vpH, vpL, vpV, vpUp, vpStart, bar_index - 1, math.min(vpWidth, math.max(5, dayBars)), vpPastText, false))
-            if array.size(pastProfiles) > vpPastDays
-                f_deleteProfile(array.shift(pastProfiles))
-        // Empieza el perfil del nuevo periodo
-        array.clear(vpH)
-        array.clear(vpL)
-        array.clear(vpV)
-        array.clear(vpUp)
-        vpStart := bar_index
-    if na(vpStart)
-        vpStart := bar_index
-    array.push(vpH, high)
-    array.push(vpL, low)
-    array.push(vpV, nz(volume))
-    array.push(vpUp, close >= open)
-    if not vpPeriodic and array.size(vpH) > vpLookback
-        array.shift(vpH)
-        array.shift(vpL)
-        array.shift(vpV)
-        array.shift(vpUp)
-
-// POC anteriores vírgenes: se extienden hasta que el precio los toca
-if array.size(prevPocs) > 0
-    for p in prevPocs
-        if p.naked
-            if high >= p.price and low <= p.price
-                p.naked := false
-                line.set_x2(p.ln, bar_index)
-            else if nakedPoc
-                line.set_x2(p.ln, bar_index)
-
-// Perfil del periodo en curso: se rehace en cada tick (tiempo real)
-var DayProfile curProfile = na
-if vpAllowed and barstate.islast and array.size(vpH) > 0
-    if not na(curProfile)
-        f_deleteProfile(curProfile)
-    int startIdx = vpPeriodic ? vpStart : bar_index - array.size(vpH) + 1
-    int x0       = vpPlace == VP_AT_START ? startIdx : bar_index + vpOffset
-    int xEnd     = vpPlace == VP_AT_START ? bar_index : x0 + vpWidth
-    curProfile := f_drawProfile(vpH, vpL, vpV, vpUp, x0, xEnd, vpWidth, vpTextOn, true)
-
 // ═════════════════════════════ TABLA DE REACCIÓN ═══════════════════════════
 // Una fila de la tabla: nombre, % de acierto y número de toques resueltos
 f_statRow(table t, int r, string name, int w, int lo) =>
@@ -806,8 +476,8 @@ f_statRow(table t, int r, string name, int w, int lo) =>
     table.cell(t, 1, r, pct, text_color = res > 0 and w >= lo ? color.new(#089981, 0) : color.new(#f23645, 0), text_size = size.small)
     table.cell(t, 2, r, str.tostring(res) + (res < 30 ? " · poca muestra" : ""), text_color = res < 30 ? color.orange : txtC, text_size = size.tiny)
 
-var table stTbl = table.new(f_pos(statsPos), 3, 5, bgcolor = color.new(#0f172a, 15), frame_color = color.new(color.gray, 60), frame_width = 1, border_color = color.new(color.gray, 85), border_width = 1)
-if statsOn and barstate.islast and (obShow or znShow or ifShow)
+var table stTbl = table.new(f_pos(statsPos), 3, 4, bgcolor = color.new(#0f172a, 15), frame_color = color.new(color.gray, 60), frame_width = 1, border_color = color.new(color.gray, 85), border_width = 1)
+if statsOn and barstate.islast and (obShow or znShow)
     color txtH = color.new(#e2e8f0, 0)
     table.cell(stTbl, 0, 0, "Reacción ≥ " + str.tostring(reactAtr) + " ATR", text_color = txtH, text_size = size.small, text_halign = text.align_left)
     table.cell(stTbl, 1, 0, "acierto", text_color = txtH, text_size = size.tiny)
@@ -815,7 +485,6 @@ if statsOn and barstate.islast and (obShow or znShow or ifShow)
     f_statRow(stTbl, 1, "OB swing (todos)", obWins, obLosses)
     f_statRow(stTbl, 2, "OB A+ (en zona TF sup.)", obWinsA, obLossA)
     f_statRow(stTbl, 3, "Zonas BUY / SELL", znWins, znLosses)
-    f_statRow(stTbl, 4, "iFVG", ifWins, ifLosses)
 
 // ═════════════════════════════ ALERTAS ═════════════════════════════════════
 alertcondition(newBullOB, "Nuevo OB swing alcista", "SMC Pro: nuevo OB swing alcista en {{ticker}} ({{interval}})")
@@ -826,6 +495,3 @@ alertcondition(sFirstTouch, "Precio toca OB bajista", "SMC Pro: {{ticker}} vuelv
 alertcondition(bFirstA or sFirstA, "Precio toca OB A+", "SMC Pro: {{ticker}} vuelve a un OB A+ ({{close}})")
 alertcondition(zoneBuyTouch, "Precio toca zona BUY", "SMC Pro: {{ticker}} vuelve a una zona BUY ({{close}})")
 alertcondition(zoneSellTouch, "Precio toca zona SELL", "SMC Pro: {{ticker}} vuelve a una zona SELL ({{close}})")
-alertcondition(newIfBull, "Nuevo iFVG alcista", "SMC Pro: nuevo iFVG alcista (soporte) en {{ticker}} ({{interval}})")
-alertcondition(newIfBear, "Nuevo iFVG bajista", "SMC Pro: nuevo iFVG bajista (resistencia) en {{ticker}} ({{interval}})")
-alertcondition(ibFirst or isFirst, "Precio toca iFVG", "SMC Pro: {{ticker}} vuelve a un iFVG ({{close}})")

@@ -2,23 +2,21 @@
 
 | Archivo | Para qué |
 |---|---|
-| [`SMC_Confirm_Pro.pine`](SMC_Confirm_Pro.pine) | **Principal.** Perfil de liquidez de cada día y del día en curso, zonas BUY/SELL de temporalidades superiores, order blocks swing e iFVG, filtrados según su reacción medida en datos reales. |
+| [`SMC_Confirm_Pro.pine`](SMC_Confirm_Pro.pine) | **Principal.** Zonas BUY/SELL de temporalidades superiores y order blocks swing, filtrados según su reacción medida en datos reales. |
 | [`CEP_Confirmation_Engine_Pro.pine`](CEP_Confirmation_Engine_Pro.pine) | Capa de 13 filtros para validar las señales de cualquier otro indicador. |
 
 > No es asesoramiento financiero. Ningún indicador garantiza resultados. Mide siempre fuera de muestra antes de arriesgar dinero.
 
 ## SMC Confirm Pro
 
-Muestra cuatro cosas:
+Muestra dos cosas:
 
 | Herramienta | Qué ves |
 |---|---|
-| **Perfil de liquidez** | Cada día terminado deja su perfil completo (4 días por defecto, hasta 8): barras claras de compradores y oscuras de vendedores por fila, **POC** (línea roja continua) y **VAH/VAL** (líneas discontinuas). El día en curso se recalcula en cada tick y lleva además el texto `compras × ventas` por fila y el total del día debajo. Las filas fuera del value area se ven más apagadas. |
 | **Zonas BUY / SELL** | Cajas **M15 SELL**, **M30 BUY**, **H1 SELL**... Solo se aceptan las que van a favor de la EMA 50 y de la estructura mayor de su temporalidad. Calculadas con velas cerradas, no repintan. |
 | **Order blocks swing** | Solo los que van a favor de la EMA 200 y de la estructura mayor (4 veces el swing) y tienen volumen por encima de la media en su origen. El texto **OB ★★★** indica cuántos criterios de calidad cumple. Los **OB A+** (borde grueso) están además dentro de una zona BUY/SELL de temporalidad superior. Cada OB lleva una línea discontinua en su **50 %** como referencia de entrada. |
-| **iFVG** | FVG invertidos: un FVG alcista que una vela cierra por debajo pasa a ser resistencia, y un FVG bajista cerrado por encima pasa a ser soporte. Solo se muestran si el hueco mide al menos 0,25 ATR y van a favor de la EMA 200 y de la estructura mayor. Se borran al invalidarse (cierre al otro lado). |
 
-Todo es personalizable: periodo del perfil, filas, ancho, posición, colores, textos, value area, estilo del POC/VAH/VAL, temporalidades de las zonas, filtros, mitigación, etc.
+Todo es personalizable: temporalidades de las zonas, filtros, mitigación, colores, textos, línea del 50 % y tabla de reacción.
 
 ### Cómo se eligieron los filtros (datos reales)
 
@@ -54,15 +52,6 @@ Se replicó la lógica del indicador en Python y se midió la **reacción**: tra
 
 Los OB A+ tienen muy pocos casos fuera de muestra (2). Por eso no se usan como filtro, solo se resaltan, y la tabla los mide aparte en tu gráfico.
 
-### Prueba de los iFVG
-
-| iFVG | Dentro de muestra | Fuera de muestra |
-|---|---|---|
-| Todos | 34 % (845) | 33 % (594) |
-| **Hueco ≥ 0,25 ATR + EMA 200 + estructura mayor** (por defecto) | **44 %** (163) | **41 %** (139) |
-
-Los iFVG reaccionan menos que los OB (66 %) y que las zonas BUY/SELL (84 %). Son más útiles como **confluencia** con un OB o una zona que como señal aislada. Tienen su propia fila en la tabla de reacción.
-
 ### Errores corregidos en esta versión
 
 - **El toque inmediato inflaba la estadística:** un OB recién creado podía contar como "tocado" sin que el precio hubiera salido antes de la zona. Ahora el toque solo cuenta tras salir por completo, y lo mismo vale para las zonas.
@@ -78,7 +67,7 @@ Los iFVG reaccionan menos que los OB (66 %) y que las zonas BUY/SELL (84 %). Son
 
 ### Alertas
 
-Nuevo OB alcista/bajista · Nuevo OB A+ · Nuevo iFVG alcista/bajista · Precio toca iFVG · Precio vuelve a un OB alcista/bajista · Precio vuelve a un OB A+ · Precio vuelve a una zona BUY/SELL.
+Nuevo OB alcista/bajista · Nuevo OB A+ · Precio vuelve a un OB alcista/bajista · Precio vuelve a un OB A+ · Precio vuelve a una zona BUY/SELL.
 
 ---
 
