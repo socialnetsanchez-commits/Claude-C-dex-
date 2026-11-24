@@ -122,6 +122,9 @@ color  obBullCol   = input.color(color.new(#089981, 60), "Alcista", group = G_OB
 color  obBearCol   = input.color(color.new(#f23645, 70), "Bajista", group = G_OB, inline = "oc")
 bool   obTextOn    = input.bool(true, "Texto con fuerza (★)", group = G_OB, inline = "ot")
 color  obTxtCol    = input.color(#787b86, "", group = G_OB, inline = "ot")
+bool   obMidOn     = input.bool(true, "Línea del 50 % (referencia de entrada)", group = G_OB, inline = "omd")
+string obMidStyle  = input.string(ST_DASHED, "", options = [ST_SOLID, ST_DASHED, ST_DOTTED], group = G_OB, inline = "omd")
+bool   obAplusOn   = input.bool(true, "Resaltar OB A+ (dentro de una zona BUY / SELL de TF superior)", group = G_OB, tooltip = "En las pruebas con datos reales, los OB que coinciden con una zona de temporalidad superior reaccionaron más (84 % frente a 63 % dentro de muestra), aunque fuera de muestra solo hubo 2 casos. Se cuentan aparte en la tabla.")
 
 // 4 · Medición de la reacción
 bool   statsOn  = input.bool(true, "Tabla de reacción de OB y zonas", group = G_ST, tooltip = "Cuenta, tras el primer toque (el precio debe haber salido antes de la zona), cuántas veces el precio se aleja al menos X ATR antes de que una vela cierre al otro lado. Si ambas cosas pasan en la misma vela, cuenta como fallo.")
@@ -139,10 +142,12 @@ color C_NONE    = color.new(#000000, 100)
 // ═════════════════════════════ TIPOS ═══════════════════════════════════════
 type OB
     box   bx
+    line  mid
     float top
     float btm
     int   dir
     float atrRef
+    bool  aplus    = false
     bool  left     = false
     bool  touched  = false
     int   touchBar = na
@@ -340,12 +345,16 @@ f_trackZone(float top, float btm, int t, bool bull, bool enabled) =>
             zDone := true
     [win, loss, first]
 
-// Gestiona los OB activos: salida de la zona, primer toque, reacción, mitigación
+// Gestiona los OB activos: salida de la zona, primer toque, reacción, mitigación.
+// Devuelve los resultados de todos los OB y, aparte, los de los OB A+.
 f_manageOBs(array<OB> arr) =>
-    int  wins   = 0
-    int  losses = 0
-    bool firstT = false
-    int  n      = array.size(arr)
+    int  wins    = 0
+    int  losses  = 0
+    int  winsA   = 0
+    int  lossesA = 0
+    bool firstT  = false
+    bool firstA  = false
+    int  n       = array.size(arr)
     if n > 0
         for i = n - 1 to 0
             OB    o      = array.get(arr, i)
@@ -360,14 +369,22 @@ f_manageOBs(array<OB> arr) =>
                 o.touched  := true
                 o.touchBar := bar_index
                 firstT     := true
+                if o.aplus
+                    firstA := true
             if mitig
                 // Supuesto conservador: mitigación antes que reacción en la misma vela
                 if o.touched and not o.resolved
                     o.resolved := true
                     losses     += 1
+                    if o.aplus
+                        lossesA += 1
                 box.set_right(o.bx, bar_index)
+                if not na(o.mid)
+                    line.set_x2(o.mid, bar_index)
                 if obDelMitig
                     box.delete(o.bx)
+                    if not na(o.mid)
+                        line.delete(o.mid)
                 array.remove(arr, i)
             else
                 if o.touched and not o.resolved and bar_index > o.touchBar
@@ -375,8 +392,15 @@ f_manageOBs(array<OB> arr) =>
                     if reacted
                         o.resolved := true
                         wins       += 1
+                        if o.aplus
+                            winsA += 1
                 box.set_right(o.bx, bar_index)
-    [wins, losses, firstT]
+                if not na(o.mid)
+                    line.set_x2(o.mid, bar_index)
+    [wins, losses, winsA, lossesA, firstT, firstA]
+
+// ¿Se solapa el OB con una zona de TF superior válida?
+f_ov(bool ok, float zTop, float zBtm, float top, float btm) => ok and not na(zTop) and not na(zBtm) and math.max(zBtm, btm) <= math.min(zTop, top)
 
 f_overlaps(array<OB> arr, float top, float btm) =>
     bool hit = false
@@ -441,6 +465,24 @@ f_valueArea(array<float> tot, int pocRow, float pct) =>
 
 f_fade(color c, bool keep) => keep ? c : color.new(c, math.min(100, color.t(c) + vaOutTransp))
 
+// ═════════════════════════════ 2 · ZONAS BUY / SELL (datos) ════════════════
+// Se calculan antes que los OB para poder detectar la confluencia (OB A+)
+int  chartSec = timeframe.in_seconds()
+bool tf1Val   = tf1On and timeframe.in_seconds(tf1) >= chartSec
+bool tf2Val   = tf2On and timeframe.in_seconds(tf2) >= chartSec
+bool tf3Val   = tf3On and timeframe.in_seconds(tf3) >= chartSec
+bool tf4Val   = tf4On and timeframe.in_seconds(tf4) >= chartSec
+bool tf1Ok    = znShow and tf1Val
+bool tf2Ok    = znShow and tf2Val
+bool tf3Ok    = znShow and tf3Val
+bool tf4Ok    = znShow and tf4Val
+bool znWick   = znMitig == MIT_WICK
+
+[z1BearTop, z1BearBtm, z1BearT, z1BullTop, z1BullBtm, z1BullT] = request.security(syminfo.tickerid, tf1, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
+[z2BearTop, z2BearBtm, z2BearT, z2BullTop, z2BullBtm, z2BullT] = request.security(syminfo.tickerid, tf2, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
+[z3BearTop, z3BearBtm, z3BearT, z3BullTop, z3BullBtm, z3BullT] = request.security(syminfo.tickerid, tf3, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
+[z4BearTop, z4BearBtm, z4BearT, z4BullTop, z4BullBtm, z4BullT] = request.security(syminfo.tickerid, tf4, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
+
 // ═════════════════════════════ 3 · ORDER BLOCKS SWING ══════════════════════
 [obTrend, obUp, obDn, obShift, obIdx, obLvl] = f_structure(obSwingLen)
 [bigTrend, bigUp, bigDn, bigShift, bigIdx, bigLvl] = f_structure(obBigLen)
@@ -449,6 +491,8 @@ var array<OB>    bullOBs  = array.new<OB>()
 var array<OB>    bearOBs  = array.new<OB>()
 var int          obWins   = 0
 var int          obLosses = 0
+var int          obWinsA  = 0
+var int          obLossA  = 0
 var array<float> bufH     = array.new<float>()
 var array<float> bufL     = array.new<float>()
 var array<float> bufV     = array.new<float>()
@@ -461,41 +505,39 @@ if array.size(bufH) > BUF
     array.shift(bufV)
 
 // 1) Salidas, toques, reacciones y mitigaciones (antes de crear los de esta vela)
-[bWins, bLosses, bFirstTouch] = f_manageOBs(bullOBs)
-[sWins, sLosses, sFirstTouch] = f_manageOBs(bearOBs)
+[bWins, bLosses, bWinsA, bLossA, bFirstTouch, bFirstA] = f_manageOBs(bullOBs)
+[sWins, sLosses, sWinsA, sLossA, sFirstTouch, sFirstA] = f_manageOBs(bearOBs)
 obWins   += bWins + sWins
 obLosses += bLosses + sLosses
+obWinsA  += bWinsA + sWinsA
+obLossA  += bLossA + sLossA
 
 // 2) Nuevo OB en cada ruptura swing, solo si pasa los filtros
 bool newBullOB = false
 bool newBearOB = false
+bool newAplus  = false
 if obShow and (obUp or obDn)
     [oTop, oBtm, oOff] = f_obCandle(bufH, bufL, obUp, obIdx)
     [oPass, oStars]    = f_obQuality(bufV, obUp, oOff, oTop, oBtm, obShift, bigTrend)
     array<OB> target   = obUp ? bullOBs : bearOBs
     if oPass and not f_overlaps(target, oTop, oBtm)
-        color  c   = obUp ? obBullCol : obBearCol
-        string txt = obTextOn ? "OB " + str.repeat("★", oStars) : ""
-        box    bx  = box.new(bar_index - oOff, oTop, bar_index, oBtm, border_color = color.new(c, 30), bgcolor = c, text = txt, text_color = obTxtCol, text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_center)
-        array.unshift(target, OB.new(bx = bx, top = oTop, btm = oBtm, dir = obUp ? 1 : -1, atrRef = atr))
+        // A+: el OB está dentro de una zona BUY (alcista) o SELL (bajista) de TF superior
+        bool   confBuy  = f_ov(tf1Val, z1BullTop, z1BullBtm, oTop, oBtm) or f_ov(tf2Val, z2BullTop, z2BullBtm, oTop, oBtm) or f_ov(tf3Val, z3BullTop, z3BullBtm, oTop, oBtm) or f_ov(tf4Val, z4BullTop, z4BullBtm, oTop, oBtm)
+        bool   confSell = f_ov(tf1Val, z1BearTop, z1BearBtm, oTop, oBtm) or f_ov(tf2Val, z2BearTop, z2BearBtm, oTop, oBtm) or f_ov(tf3Val, z3BearTop, z3BearBtm, oTop, oBtm) or f_ov(tf4Val, z4BearTop, z4BearBtm, oTop, oBtm)
+        bool   aplus    = obAplusOn and (obUp ? confBuy : confSell)
+        color  c        = obUp ? obBullCol : obBearCol
+        string txt      = obTextOn ? (aplus ? "OB A+ " : "OB ") + str.repeat("★", oStars) : ""
+        float  midP     = (oTop + oBtm) / 2
+        box    bx       = box.new(bar_index - oOff, oTop, bar_index, oBtm, border_color = color.new(c, aplus ? 0 : 30), border_width = aplus ? 2 : 1, bgcolor = c, text = txt, text_color = obTxtCol, text_size = size.tiny, text_halign = text.align_right, text_valign = text.align_center)
+        line   md       = obMidOn ? line.new(bar_index - oOff, midP, bar_index, midP, color = color.new(c, 20), style = f_lineStyle(obMidStyle)) : na
+        array.unshift(target, OB.new(bx = bx, mid = md, top = oTop, btm = oBtm, dir = obUp ? 1 : -1, atrRef = atr, aplus = aplus))
         if array.size(target) > obMaxActive
             array.pop(target)
         newBullOB := obUp
         newBearOB := obDn
+        newAplus  := aplus
 
-// ═════════════════════════════ 2 · ZONAS BUY / SELL ════════════════════════
-int  chartSec = timeframe.in_seconds()
-bool tf1Ok    = znShow and tf1On and timeframe.in_seconds(tf1) >= chartSec
-bool tf2Ok    = znShow and tf2On and timeframe.in_seconds(tf2) >= chartSec
-bool tf3Ok    = znShow and tf3On and timeframe.in_seconds(tf3) >= chartSec
-bool tf4Ok    = znShow and tf4On and timeframe.in_seconds(tf4) >= chartSec
-bool znWick   = znMitig == MIT_WICK
-
-[z1BearTop, z1BearBtm, z1BearT, z1BullTop, z1BullBtm, z1BullT] = request.security(syminfo.tickerid, tf1, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
-[z2BearTop, z2BearBtm, z2BearT, z2BullTop, z2BullBtm, z2BullT] = request.security(syminfo.tickerid, tf2, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
-[z3BearTop, z3BearBtm, z3BearT, z3BullTop, z3BullBtm, z3BullT] = request.security(syminfo.tickerid, tf3, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
-[z4BearTop, z4BearBtm, z4BearT, z4BullTop, z4BullBtm, z4BullT] = request.security(syminfo.tickerid, tf4, f_mtfZones(znLen, znWick, znNeedEma, znNeedBig), lookahead = barmerge.lookahead_on)
-
+// ═════════════════════════════ 2 · ZONAS BUY / SELL (medición y dibujo) ════
 // Medición de la reacción de cada zona visible (8 = 4 temporalidades × 2 lados)
 [w1s, l1s, f1s] = f_trackZone(z1BearTop, z1BearBtm, z1BearT, false, tf1Ok and znSellOn)
 [w1b, l1b, f1b] = f_trackZone(z1BullTop, z1BullBtm, z1BullT, true, tf1Ok and znBuyOn)
@@ -651,27 +693,31 @@ if vpAllowed and barstate.islast and array.size(vpH) > 0
             vpValLn := line.new(x0, val, xEnd, val, color = vaLineCol, width = vaLineWidth, style = f_lineStyle(vaLineStyle))
 
 // ═════════════════════════════ TABLA DE REACCIÓN ═══════════════════════════
-var table stTbl = table.new(f_pos(statsPos), 3, 3, bgcolor = color.new(#0f172a, 15), frame_color = color.new(color.gray, 60), frame_width = 1, border_color = color.new(color.gray, 85), border_width = 1)
+// Una fila de la tabla: nombre, % de acierto y número de toques resueltos
+f_statRow(table t, int r, string name, int w, int lo) =>
+    color  txtC = color.new(#e2e8f0, 0)
+    int    res  = w + lo
+    string pct  = res > 0 ? str.tostring(100.0 * w / res, "0") + "%" : "—"
+    table.cell(t, 0, r, name, text_color = txtC, text_size = size.small, text_halign = text.align_left)
+    table.cell(t, 1, r, pct, text_color = res > 0 and w >= lo ? color.new(#089981, 0) : color.new(#f23645, 0), text_size = size.small)
+    table.cell(t, 2, r, str.tostring(res) + (res < 30 ? " · poca muestra" : ""), text_color = res < 30 ? color.orange : txtC, text_size = size.tiny)
+
+var table stTbl = table.new(f_pos(statsPos), 3, 4, bgcolor = color.new(#0f172a, 15), frame_color = color.new(color.gray, 60), frame_width = 1, border_color = color.new(color.gray, 85), border_width = 1)
 if statsOn and barstate.islast and (obShow or znShow)
-    color  txtC  = color.new(#e2e8f0, 0)
-    int    obRes = obWins + obLosses
-    int    znRes = znWins + znLosses
-    string obPct = obRes > 0 ? str.tostring(100.0 * obWins / obRes, "0") + "%" : "—"
-    string znPct = znRes > 0 ? str.tostring(100.0 * znWins / znRes, "0") + "%" : "—"
-    table.cell(stTbl, 0, 0, "Reacción ≥ " + str.tostring(reactAtr) + " ATR", text_color = txtC, text_size = size.small, text_halign = text.align_left)
-    table.cell(stTbl, 1, 0, "acierto", text_color = txtC, text_size = size.tiny)
-    table.cell(stTbl, 2, 0, "toques", text_color = txtC, text_size = size.tiny)
-    table.cell(stTbl, 0, 1, "OB swing", text_color = txtC, text_size = size.small, text_halign = text.align_left)
-    table.cell(stTbl, 1, 1, obPct, text_color = obRes > 0 and obWins >= obLosses ? color.new(#089981, 0) : color.new(#f23645, 0), text_size = size.small)
-    table.cell(stTbl, 2, 1, str.tostring(obRes) + (obRes < 30 ? " · poca muestra" : ""), text_color = obRes < 30 ? color.orange : txtC, text_size = size.tiny)
-    table.cell(stTbl, 0, 2, "Zonas BUY / SELL", text_color = txtC, text_size = size.small, text_halign = text.align_left)
-    table.cell(stTbl, 1, 2, znPct, text_color = znRes > 0 and znWins >= znLosses ? color.new(#089981, 0) : color.new(#f23645, 0), text_size = size.small)
-    table.cell(stTbl, 2, 2, str.tostring(znRes) + (znRes < 30 ? " · poca muestra" : ""), text_color = znRes < 30 ? color.orange : txtC, text_size = size.tiny)
+    color txtH = color.new(#e2e8f0, 0)
+    table.cell(stTbl, 0, 0, "Reacción ≥ " + str.tostring(reactAtr) + " ATR", text_color = txtH, text_size = size.small, text_halign = text.align_left)
+    table.cell(stTbl, 1, 0, "acierto", text_color = txtH, text_size = size.tiny)
+    table.cell(stTbl, 2, 0, "toques", text_color = txtH, text_size = size.tiny)
+    f_statRow(stTbl, 1, "OB swing (todos)", obWins, obLosses)
+    f_statRow(stTbl, 2, "OB A+ (en zona TF sup.)", obWinsA, obLossA)
+    f_statRow(stTbl, 3, "Zonas BUY / SELL", znWins, znLosses)
 
 // ═════════════════════════════ ALERTAS ═════════════════════════════════════
 alertcondition(newBullOB, "Nuevo OB swing alcista", "SMC Pro: nuevo OB swing alcista en {{ticker}} ({{interval}})")
 alertcondition(newBearOB, "Nuevo OB swing bajista", "SMC Pro: nuevo OB swing bajista en {{ticker}} ({{interval}})")
+alertcondition(newAplus, "Nuevo OB A+ (en zona de TF superior)", "SMC Pro: nuevo OB A+ en {{ticker}} ({{interval}}), dentro de una zona de temporalidad superior")
 alertcondition(bFirstTouch, "Precio toca OB alcista", "SMC Pro: {{ticker}} vuelve a un OB swing alcista ({{close}})")
 alertcondition(sFirstTouch, "Precio toca OB bajista", "SMC Pro: {{ticker}} vuelve a un OB swing bajista ({{close}})")
+alertcondition(bFirstA or sFirstA, "Precio toca OB A+", "SMC Pro: {{ticker}} vuelve a un OB A+ ({{close}})")
 alertcondition(zoneBuyTouch, "Precio toca zona BUY", "SMC Pro: {{ticker}} vuelve a una zona BUY ({{close}})")
 alertcondition(zoneSellTouch, "Precio toca zona SELL", "SMC Pro: {{ticker}} vuelve a una zona SELL ({{close}})")

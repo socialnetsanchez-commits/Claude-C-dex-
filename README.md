@@ -15,7 +15,7 @@ Solo muestra tres cosas:
 |---|---|
 | **Perfil de liquidez del día** | Empieza en la primera vela del día y se recalcula en cada tick hasta que empieza el siguiente. Cada fila muestra una barra clara (compras) y una oscura (ventas) con el texto `compras × ventas` (p. ej. `4.3K × 7.18K`) y el total del día debajo. La línea roja continua es el **POC** y las discontinuas son el **VAH/VAL** (value area del 70 %). Las filas fuera del value area se ven más apagadas. |
 | **Zonas BUY / SELL** | Cajas **M15 SELL**, **M30 BUY**, **H1 SELL**... Solo se aceptan las que van a favor de la EMA 50 y de la estructura mayor de su temporalidad. Calculadas con velas cerradas, no repintan. |
-| **Order blocks swing** | Solo los que van a favor de la EMA 200 y de la estructura mayor (4 veces el swing) y tienen volumen por encima de la media en su origen. El texto **OB ★★★** indica cuántos criterios de calidad cumple. |
+| **Order blocks swing** | Solo los que van a favor de la EMA 200 y de la estructura mayor (4 veces el swing) y tienen volumen por encima de la media en su origen. El texto **OB ★★★** indica cuántos criterios de calidad cumple. Los **OB A+** (borde grueso) están además dentro de una zona BUY/SELL de temporalidad superior. Cada OB lleva una línea discontinua en su **50 %** como referencia de entrada. |
 
 Todo es personalizable: periodo del perfil, filas, ancho, posición, colores, textos, value area, estilo del POC/VAH/VAL, temporalidades de las zonas, filtros, mitigación, etc.
 
@@ -42,6 +42,17 @@ Se replicó la lógica del indicador en Python y se midió la **reacción**: tra
 
 **Advertencia honesta:** no son datos de NQ en 5 minutos, y las muestras son de decenas o cientos de casos. Ningún porcentaje está garantizado en tu mercado. Por eso el indicador trae una **tabla que mide la reacción en tu propio gráfico**. Con menos de 30 toques aparece "poca muestra".
 
+### Segunda ronda de pruebas (qué se añadió y qué se descartó)
+
+| Idea | Dentro de muestra | Fuera de muestra | Decisión |
+|---|---|---|---|
+| OB dentro de una zona de TF superior | 84 % (19) frente a 63 % (139) | 100 % (2) frente a 64,5 % (76) | **Añadido** como OB A+, con fila propia en la tabla |
+| OB tocado ≤ 50 velas frente a más antiguo | 61 % frente a 72,5 % | 66 % frente a 64 % | Descartado: el efecto no es estable |
+| Toque en horario Londres/NY frente a fuera | 80 % frente a 54 % | 59 % frente a 91 % | Descartado: el efecto se invierte |
+| Mostrar hasta 3 zonas por TF en vez de la última | 68 % frente a 69 % | 75 % frente a 82 % | Descartado: empeora |
+
+Los OB A+ tienen muy pocos casos fuera de muestra (2). Por eso no se usan como filtro, solo se resaltan, y la tabla los mide aparte en tu gráfico.
+
 ### Errores corregidos en esta versión
 
 - **El toque inmediato inflaba la estadística:** un OB recién creado podía contar como "tocado" sin que el precio hubiera salido antes de la zona. Ahora el toque solo cuenta tras salir por completo, y lo mismo vale para las zonas.
@@ -57,7 +68,7 @@ Se replicó la lógica del indicador en Python y se midió la **reacción**: tra
 
 ### Alertas
 
-Nuevo OB alcista/bajista · Precio vuelve a un OB alcista/bajista · Precio vuelve a una zona BUY/SELL.
+Nuevo OB alcista/bajista · Nuevo OB A+ · Precio vuelve a un OB alcista/bajista · Precio vuelve a un OB A+ · Precio vuelve a una zona BUY/SELL.
 
 ---
 
