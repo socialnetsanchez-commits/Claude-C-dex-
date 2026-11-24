@@ -1,0 +1,630 @@
+//@version=6
+// ════════════════════════════════════════════════════════════════════════════
+//  Confirmation Engine Pro (CEP) · Pine Script v6
+//  Capa de confirmación profesional para cualquier señal de compra / venta.
+//
+//  Flujo:
+//   1) Señal base: Supertrend, cruce de EMAs o la señal de OTRO indicador
+//      (modo "Externa": añade tu indicador al gráfico y selecciona su salida).
+//   2) Motor de confirmación: 13 filtros puntuables (tendencia, TF superior,
+//      ADX, DI, RSI, MACD, Choppiness, volumen, régimen ATR, vela, anti-
+//      persecución, vela gigante) + tendencia obligatoria.
+//   3) Gatillo: la entrada solo se dispara si el precio CIERRA por encima del
+//      máximo (compra) o por debajo del mínimo (venta) de la vela de setup.
+//   4) Riesgo: stop ATR o swing, riesgo mín/máx en ATR, TP1-TP3 en R con
+//      parciales, breakeven tras TP1, stop a TP1 tras TP2, salida por señal
+//      contraria o fin de sesión, límite diario y enfriamiento.
+//   5) Medición honesta: estadísticas en R con costes y supuesto conservador
+//      (si stop y objetivo caen en la misma vela, cuenta el stop).
+//
+//  Sin repintado: datos HTF con [1] + lookahead_on y decisiones al cierre.
+//  No es asesoramiento financiero. Valida siempre fuera de muestra.
+// ════════════════════════════════════════════════════════════════════════════
+indicator("Confirmation Engine Pro", shorttitle = "CEP", overlay = true, max_labels_count = 500, max_lines_count = 500)
+
+// ─────────────────────────────── Constantes ────────────────────────────────
+const string BASE_ST  = "Supertrend"
+const string BASE_EMA = "Cruce de EMAs"
+const string BASE_EXT = "Externa (otro indicador)"
+const string EXT_TWO  = "Dos series: compra y venta (> 0 = señal)"
+const string EXT_ONE  = "Una serie: + compra / − venta"
+const string EXT_LINE = "Línea: el precio la cruza"
+const string SL_ATR   = "ATR"
+const string SL_SWING = "Swing + colchón ATR"
+const float  EPS      = 0.000001
+
+const string G_BASE  = "1 · Señal base"
+const string G_CONF  = "2 · Motor de confirmación"
+const string G_TREND = "3 · Filtros de tendencia"
+const string G_MOM   = "4 · Filtros de fuerza y momentum"
+const string G_QUAL  = "5 · Filtros de calidad y volatilidad"
+const string G_RISK  = "6 · Gestión de riesgo"
+const string G_STATS = "7 · Tamaño de posición y estadísticas"
+const string G_UI    = "8 · Visual"
+
+// ═══════════════════════════════ INPUTS ════════════════════════════════════
+// 1 · Señal base
+string baseMode   = input.string(BASE_ST, "Generador de señal", options = [BASE_ST, BASE_EMA, BASE_EXT], group = G_BASE, tooltip = "Externa = filtra las señales del indicador que ya usas. Añádelo al mismo gráfico y elige abajo sus salidas (plots).")
+float  stFactor   = input.float(3.0, "Supertrend · factor", minval = 0.1, step = 0.1, group = G_BASE, inline = "st")
+int    stAtrLen   = input.int(10, "ATR", minval = 1, group = G_BASE, inline = "st")
+int    emaFastLen = input.int(9, "EMA rápida", minval = 1, group = G_BASE, inline = "ema")
+int    emaSlowLen = input.int(21, "EMA lenta", minval = 2, group = G_BASE, inline = "ema")
+string extMode    = input.string(EXT_TWO, "Formato de la señal externa", options = [EXT_TWO, EXT_ONE, EXT_LINE], group = G_BASE, tooltip = "Dos series: una salida vale > 0 cuando hay compra y otra cuando hay venta. Una serie: > 0 compra, < 0 venta. Línea: compra cuando el precio cruza la línea hacia arriba y venta hacia abajo.")
+float  extBuySrc  = input.source(close, "Externa · compra / serie / línea", group = G_BASE)
+float  extSellSrc = input.source(close, "Externa · venta (solo 'Dos series')", group = G_BASE)
+
+// 2 · Motor de confirmación
+int    minConf        = input.int(10, "Confirmaciones mínimas (de 13)", minval = 0, maxval = 13, group = G_CONF, tooltip = "Filtros activos que deben cumplirse. Si desactivas filtros, el mínimo se ajusta solo al número de filtros activos.")
+bool   trendMandatory = input.bool(true, "Tendencia obligatoria (EMA + pendiente + TF superior)", group = G_CONF, tooltip = "Nunca opera contra la tendencia aunque la puntuación sea alta.")
+int    baseMemory     = input.int(3, "Validez de la señal base (barras)", minval = 0, maxval = 20, group = G_CONF, tooltip = "Los filtros pueden confirmar hasta N barras después de la señal base. Cada señal base solo se usa una vez.")
+bool   useTrigger     = input.bool(true, "Gatillo de ruptura", group = G_CONF, inline = "trg", tooltip = "Tras el setup, la entrada exige un CIERRE por encima del máximo (compra) o por debajo del mínimo (venta) de la vela de setup. Se cancela si cierra al otro lado de la vela de setup o si vence la ventana.")
+int    triggerWindow  = input.int(3, "ventana (barras)", minval = 1, maxval = 20, group = G_CONF, inline = "trg")
+bool   confirmOnClose = input.bool(true, "Señales solo al cierre de vela (sin repintado)", group = G_CONF)
+int    cooldownBars   = input.int(3, "Barras de espera tras cerrar una operación", minval = 0, group = G_CONF)
+int    maxTradesDay   = input.int(0, "Máx. operaciones por día (0 = sin límite)", minval = 0, group = G_CONF)
+bool   useSession     = input.bool(false, "Operar solo en sesión", group = G_CONF, inline = "ses")
+string sessionStr     = input.session("0930-1600", "", group = G_CONF, inline = "ses")
+string sessionTz      = input.string("America/New_York", "Zona horaria de la sesión", group = G_CONF)
+bool   flatOutside    = input.bool(false, "Cerrar la operación al terminar la sesión", group = G_CONF)
+
+// 3 · Tendencia
+bool   useTrend  = input.bool(true, "Precio vs EMA", group = G_TREND, inline = "tr")
+int    trendLen  = input.int(200, "", minval = 10, group = G_TREND, inline = "tr")
+bool   useSlope  = input.bool(true, "Pendiente de la EMA a favor", group = G_TREND, inline = "sl")
+int    slopeBars = input.int(5, "barras", minval = 1, group = G_TREND, inline = "sl")
+bool   useHTF    = input.bool(true, "Tendencia en TF superior", group = G_TREND, inline = "htf")
+string htfTF     = input.timeframe("60", "", group = G_TREND, inline = "htf", tooltip = "Debe ser MAYOR que el TF del gráfico; si no, el filtro se desactiva solo. Sin repintado: usa la EMA de la última vela HTF cerrada.")
+int    htfLen    = input.int(50, "EMA del TF superior", minval = 2, group = G_TREND)
+
+// 4 · Fuerza y momentum
+bool  useADX  = input.bool(true, "ADX mínimo", group = G_MOM, inline = "adx")
+int   adxLen  = input.int(14, "longitud", minval = 1, group = G_MOM, inline = "adx")
+float adxMin  = input.float(20.0, "≥", minval = 0, group = G_MOM, inline = "adx")
+bool  useDI   = input.bool(true, "DI+ / DI− a favor", group = G_MOM)
+bool  useRSI  = input.bool(true, "RSI a favor sin extremos", group = G_MOM, inline = "rsi")
+int   rsiLen  = input.int(14, "", minval = 2, group = G_MOM, inline = "rsi")
+float rsiOB   = input.float(70.0, "Sobrecompra", minval = 50, maxval = 100, group = G_MOM, inline = "rsi2")
+float rsiOS   = input.float(30.0, "Sobreventa", minval = 0, maxval = 50, group = G_MOM, inline = "rsi2")
+bool  useMACD = input.bool(true, "Histograma MACD a favor (12, 26, 9)", group = G_MOM)
+bool  useChop = input.bool(true, "Choppiness Index: evitar rango", group = G_MOM, inline = "chop")
+int   chopLen = input.int(14, "", minval = 2, group = G_MOM, inline = "chop")
+float chopMax = input.float(61.8, "máx", minval = 0, maxval = 100, group = G_MOM, inline = "chop")
+
+// 5 · Calidad y volatilidad
+bool  useVol      = input.bool(true, "Volumen > media ×", group = G_QUAL, inline = "vol")
+float volMult     = input.float(1.0, "", minval = 0, step = 0.1, group = G_QUAL, inline = "vol")
+int   volLen      = input.int(20, "periodo", minval = 1, group = G_QUAL, inline = "vol")
+bool  useAtrReg   = input.bool(true, "Régimen de volatilidad (ATR / su media)", group = G_QUAL)
+int   atrLen      = input.int(14, "ATR", minval = 1, group = G_QUAL, inline = "atr")
+int   atrBaseLen  = input.int(100, "media", minval = 10, group = G_QUAL, inline = "atr")
+float atrMinRatio = input.float(0.6, "ratio mín", minval = 0, step = 0.05, group = G_QUAL, inline = "atr2")
+float atrMaxRatio = input.float(2.5, "máx", minval = 0.1, step = 0.1, group = G_QUAL, inline = "atr2")
+bool  useCandle   = input.bool(true, "Vela de confirmación: cuerpo ≥ % del rango", group = G_QUAL, inline = "cdl")
+float minBodyPct  = input.float(50.0, "", minval = 0, maxval = 100, group = G_QUAL, inline = "cdl")
+bool  useChase    = input.bool(true, "Anti-persecución: distancia a EMA ≤ ATR ×", group = G_QUAL, inline = "chs")
+float maxDistAtr  = input.float(1.5, "", minval = 0.1, step = 0.1, group = G_QUAL, inline = "chs")
+int   chaseEmaLen = input.int(20, "EMA de referencia (anti-persecución)", minval = 2, group = G_QUAL)
+bool  useBigBar   = input.bool(true, "Ignorar velas gigantes: rango > ATR ×", group = G_QUAL, inline = "big")
+float bigBarAtr   = input.float(2.5, "", minval = 0.5, step = 0.1, group = G_QUAL, inline = "big")
+
+// 6 · Gestión de riesgo
+string slMode      = input.string(SL_ATR, "Tipo de stop", options = [SL_ATR, SL_SWING], group = G_RISK)
+float  slAtrMult   = input.float(1.5, "Stop ATR ×", minval = 0.1, step = 0.1, group = G_RISK)
+int    swingLen    = input.int(10, "Swing: barras", minval = 2, group = G_RISK, inline = "sw")
+float  swingBufAtr = input.float(0.2, "colchón ATR ×", minval = 0, step = 0.05, group = G_RISK, inline = "sw")
+float  minRiskAtr  = input.float(0.75, "Riesgo mín. (ATR ×)", minval = 0, step = 0.05, group = G_RISK, inline = "rk", tooltip = "Un stop demasiado ajustado se ensancha hasta este mínimo. Si el riesgo supera el máximo, la señal se descarta (mala relación riesgo/beneficio).")
+float  maxRiskAtr  = input.float(3.0, "máx. (ATR ×)", minval = 0.1, step = 0.1, group = G_RISK, inline = "rk")
+float  tp1R        = input.float(1.0, "TP1 (R)", minval = 0.1, step = 0.1, group = G_RISK, inline = "tp")
+float  tp2R        = input.float(2.0, "TP2", minval = 0.1, step = 0.1, group = G_RISK, inline = "tp")
+float  tp3R        = input.float(3.0, "TP3", minval = 0.1, step = 0.1, group = G_RISK, inline = "tp")
+float  w1          = input.float(33.0, "% en TP1", minval = 0, maxval = 100, group = G_RISK, inline = "w")
+float  w2          = input.float(33.0, "TP2", minval = 0, maxval = 100, group = G_RISK, inline = "w")
+float  w3          = input.float(34.0, "TP3", minval = 0, maxval = 100, group = G_RISK, inline = "w")
+bool   moveBE      = input.bool(true, "Stop a breakeven tras TP1", group = G_RISK)
+bool   trailToTp1  = input.bool(true, "Stop a TP1 tras TP2", group = G_RISK)
+bool   exitOnOpp   = input.bool(true, "Cerrar si la señal base gira en contra", group = G_RISK)
+
+// 7 · Tamaño de posición y estadísticas
+float accountSize = input.float(10000, "Capital", minval = 0, group = G_STATS, inline = "acc")
+float riskPct     = input.float(1.0, "riesgo %", minval = 0.01, maxval = 100, step = 0.25, group = G_STATS, inline = "acc")
+float costTicks   = input.float(2, "Coste ida+vuelta en ticks (comisión + slippage + spread)", minval = 0, group = G_STATS)
+int   statsFrom   = input.time(timestamp("01 Jan 2020 00:00 +0000"), "Estadísticas desde", group = G_STATS, tooltip = "Ajusta parámetros con datos ANTERIORES a esta fecha y evalúa solo con los posteriores (fuera de muestra).")
+
+// 8 · Visual
+color  colBull      = input.color(#26a69a, "Alcista", group = G_UI, inline = "col")
+color  colBear      = input.color(#ef5350, "Bajista", group = G_UI, inline = "col")
+bool   showLabels   = input.bool(true, "Etiquetas de entrada (pasa el ratón para ver niveles)", group = G_UI)
+bool   showLevels   = input.bool(true, "Líneas de entrada, stop y objetivos", group = G_UI)
+bool   showResults  = input.bool(true, "Resultado en R al cerrar", group = G_UI)
+bool   showSetups   = input.bool(true, "Setups pendientes y nivel de gatillo", group = G_UI)
+bool   showEmas     = input.bool(true, "EMAs de tendencia", group = G_UI)
+bool   showBaseLine = input.bool(true, "Línea de la señal base", group = G_UI)
+bool   showBg       = input.bool(false, "Fondo según tendencia / fuera de sesión", group = G_UI)
+bool   showDash     = input.bool(true, "Panel", group = G_UI, inline = "dash")
+string dashPos      = input.string("Arriba derecha", "", options = ["Arriba derecha", "Arriba izquierda", "Abajo derecha", "Abajo izquierda"], group = G_UI, inline = "dash")
+string dashSize     = input.string("Pequeño", "", options = ["Diminuto", "Pequeño", "Normal"], group = G_UI, inline = "dash")
+
+// ═════════════════════════════ ESTILO Y HELPERS ════════════════════════════
+color  C_BG    = color.new(#0f172a, 12)
+color  C_HEAD  = color.new(#1e293b, 0)
+color  C_TXT   = color.new(#e2e8f0, 0)
+color  C_MUTED = color.new(#64748b, 0)
+string txtSize = dashSize == "Diminuto" ? size.tiny : dashSize == "Pequeño" ? size.small : size.normal
+string tblPos  = dashPos == "Arriba derecha" ? position.top_right : dashPos == "Arriba izquierda" ? position.top_left : dashPos == "Abajo derecha" ? position.bottom_right : position.bottom_left
+
+// Suma 1 punto si el filtro está activo y se cumple
+f_pt(bool enabled, bool ok) => enabled and ok ? 1 : 0
+f_en(bool enabled) => enabled ? 1 : 0
+
+// Grado de calidad según el porcentaje de filtros cumplidos
+f_grade(int score, int total) =>
+    float r = total > 0 ? float(score) / total : 1.0
+    r >= 0.999 ? "A+" : r >= 0.85 ? "A" : r >= 0.7 ? "B" : "C"
+
+f_signR(float r) => (r >= 0 ? "+" : "") + str.tostring(r, "0.00") + "R"
+
+f_cell(table t, int c, int r, string txt, color tc, color bg) =>
+    table.cell(t, c, r, txt, text_color = tc, bgcolor = bg, text_size = txtSize, text_halign = c == 0 ? text.align_left : text.align_center)
+
+f_row(table t, int r, string name, bool en, bool okL, bool okS) =>
+    f_cell(t, 0, r, name, en ? C_TXT : C_MUTED, C_BG)
+    f_cell(t, 1, r, en ? (okL ? "✔" : "✖") : "—", en ? (okL ? colBull : colBear) : C_MUTED, C_BG)
+    f_cell(t, 2, r, en ? (okS ? "✔" : "✖") : "—", en ? (okS ? colBull : colBear) : C_MUTED, C_BG)
+
+// Datos del TF superior sin repintado: solo velas HTF ya cerradas
+f_htf() =>
+    float e = ta.ema(close, htfLen)
+    [e[1], e[2]]
+
+// ═════════════════════════════ CÁLCULOS BASE ═══════════════════════════════
+float atr      = ta.atr(atrLen)
+float atrPrev  = atr[1]
+float emaTrend = ta.ema(close, trendLen)
+float emaRef   = ta.ema(close, chaseEmaLen)
+float emaFast  = ta.ema(close, emaFastLen)
+float emaSlow  = ta.ema(close, emaSlowLen)
+[stLine, stDir] = ta.supertrend(stFactor, stAtrLen)
+[diPlus, diMinus, adx] = ta.dmi(adxLen, adxLen)
+float rsi = ta.rsi(close, rsiLen)
+[macdLine, macdSignal, macdHist] = ta.macd(close, 12, 26, 9)
+float trSum     = math.sum(ta.tr(true), chopLen)
+float chopRng   = ta.highest(high, chopLen) - ta.lowest(low, chopLen)
+float chop      = chopRng > 0 ? 100 * math.log10(trSum / chopRng) / math.log10(chopLen) : 50.0
+float volAvg    = ta.sma(volume, volLen)
+bool  hasVolume = ta.cum(nz(volume)) > 0
+float atrBase   = ta.sma(atr, atrBaseLen)
+float atrRatio  = atrBase > 0 ? atr / atrBase : 1.0
+float barRange  = high - low
+float barBody   = math.abs(close - open)
+float swingLo   = ta.lowest(low, swingLen)
+float swingHi   = ta.highest(high, swingLen)
+
+[htfEma, htfEmaPrev] = request.security(syminfo.tickerid, htfTF, f_htf(), lookahead = barmerge.lookahead_on)
+bool htfActive = useHTF and timeframe.in_seconds(htfTF) > timeframe.in_seconds(timeframe.period)
+
+// Sesión y contador diario
+bool inSession = not na(time(timeframe.period, sessionStr, sessionTz))
+bool sessionOk = not useSession or inSession
+var int tradesToday = 0
+if timeframe.change("D")
+    tradesToday := 0
+
+// ═════════════════════════════ SEÑAL BASE ══════════════════════════════════
+bool stLong     = stDir < 0 and stDir[1] > 0
+bool stShort    = stDir > 0 and stDir[1] < 0
+bool emaLong    = ta.crossover(emaFast, emaSlow)
+bool emaShort   = ta.crossunder(emaFast, emaSlow)
+bool extBuyOn   = extBuySrc > 0
+bool extSellOn  = extSellSrc > 0
+bool extNeg     = extBuySrc < 0
+bool extCrossUp = ta.crossover(close, extBuySrc)
+bool extCrossDn = ta.crossunder(close, extBuySrc)
+bool extLong    = extMode == EXT_TWO ? extBuyOn and not extBuyOn[1] : extMode == EXT_ONE ? extBuyOn and not extBuyOn[1] : extCrossUp
+bool extShort   = extMode == EXT_TWO ? extSellOn and not extSellOn[1] : extMode == EXT_ONE ? extNeg and not extNeg[1] : extCrossDn
+bool baseLong   = baseMode == BASE_ST ? stLong : baseMode == BASE_EMA ? emaLong : extLong
+bool baseShort  = baseMode == BASE_ST ? stShort : baseMode == BASE_EMA ? emaShort : extShort
+
+// Memoria de la señal base: los filtros pueden confirmar hasta N barras después.
+// Cada evento base se consume una sola vez y una señal contraria lo anula.
+var int baseLongBar  = na
+var int baseShortBar = na
+var int usedLongBar  = na
+var int usedShortBar = na
+if baseLong and not baseShort
+    baseLongBar := bar_index
+if baseShort and not baseLong
+    baseShortBar := bar_index
+bool baseLongLive  = not na(baseLongBar) and bar_index - baseLongBar <= baseMemory and (na(baseShortBar) or baseShortBar < baseLongBar) and (na(usedLongBar) or usedLongBar != baseLongBar)
+bool baseShortLive = not na(baseShortBar) and bar_index - baseShortBar <= baseMemory and (na(baseLongBar) or baseLongBar < baseShortBar) and (na(usedShortBar) or usedShortBar != baseShortBar)
+
+// ═════════════════════════ MOTOR DE CONFIRMACIÓN ═══════════════════════════
+bool fTrendL  = close > emaTrend
+bool fTrendS  = close < emaTrend
+bool fSlopeL  = emaTrend > emaTrend[slopeBars]
+bool fSlopeS  = emaTrend < emaTrend[slopeBars]
+bool fHtfL    = close > htfEma and htfEma >= htfEmaPrev
+bool fHtfS    = close < htfEma and htfEma <= htfEmaPrev
+bool fAdx     = adx >= adxMin
+bool fDiL     = diPlus > diMinus
+bool fDiS     = diMinus > diPlus
+bool fRsiL    = rsi > 50 and rsi < rsiOB
+bool fRsiS    = rsi < 50 and rsi > rsiOS
+bool fMacdL   = macdHist > 0
+bool fMacdS   = macdHist < 0
+bool fChop    = chop < chopMax
+bool volActive = useVol and hasVolume
+bool fVol     = volume > volAvg * volMult
+bool fAtrReg  = atrRatio >= atrMinRatio and atrRatio <= atrMaxRatio
+bool bodyOk   = barRange > 0 and barBody / barRange * 100 >= minBodyPct
+bool fCandleL = close > open and bodyOk and close >= low + barRange * 0.5
+bool fCandleS = close < open and bodyOk and close <= high - barRange * 0.5
+bool fChaseL  = close - emaRef <= maxDistAtr * atr
+bool fChaseS  = emaRef - close <= maxDistAtr * atr
+bool fBigBar  = barRange <= bigBarAtr * atrPrev
+
+int enabledTrend = f_en(useTrend) + f_en(useSlope) + f_en(htfActive)
+int enabledMom   = f_en(useADX) + f_en(useDI) + f_en(useRSI) + f_en(useMACD) + f_en(useChop)
+int enabledQual  = f_en(volActive) + f_en(useAtrReg) + f_en(useCandle) + f_en(useChase) + f_en(useBigBar)
+int enabledCount = enabledTrend + enabledMom + enabledQual
+
+int scoreTrendL = f_pt(useTrend, fTrendL) + f_pt(useSlope, fSlopeL) + f_pt(htfActive, fHtfL)
+int scoreMomL   = f_pt(useADX, fAdx) + f_pt(useDI, fDiL) + f_pt(useRSI, fRsiL) + f_pt(useMACD, fMacdL) + f_pt(useChop, fChop)
+int scoreQualL  = f_pt(volActive, fVol) + f_pt(useAtrReg, fAtrReg) + f_pt(useCandle, fCandleL) + f_pt(useChase, fChaseL) + f_pt(useBigBar, fBigBar)
+int scoreL      = scoreTrendL + scoreMomL + scoreQualL
+
+int scoreTrendS = f_pt(useTrend, fTrendS) + f_pt(useSlope, fSlopeS) + f_pt(htfActive, fHtfS)
+int scoreMomS   = f_pt(useADX, fAdx) + f_pt(useDI, fDiS) + f_pt(useRSI, fRsiS) + f_pt(useMACD, fMacdS) + f_pt(useChop, fChop)
+int scoreQualS  = f_pt(volActive, fVol) + f_pt(useAtrReg, fAtrReg) + f_pt(useCandle, fCandleS) + f_pt(useChase, fChaseS) + f_pt(useBigBar, fBigBar)
+int scoreS      = scoreTrendS + scoreMomS + scoreQualS
+
+int  required = math.min(minConf, enabledCount)
+bool mandL    = not trendMandatory or ((not useTrend or fTrendL) and (not useSlope or fSlopeL) and (not htfActive or fHtfL))
+bool mandS    = not trendMandatory or ((not useTrend or fTrendS) and (not useSlope or fSlopeS) and (not htfActive or fHtfS))
+bool passL    = scoreL >= required and mandL
+bool passS    = scoreS >= required and mandS
+
+// ═════════════════════════════ RIESGO POTENCIAL ════════════════════════════
+float slRawL  = slMode == SL_ATR ? close - slAtrMult * atr : swingLo - swingBufAtr * atr
+float slRawS  = slMode == SL_ATR ? close + slAtrMult * atr : swingHi + swingBufAtr * atr
+float riskL   = math.max(close - slRawL, minRiskAtr * atr)
+float riskS   = math.max(slRawS - close, minRiskAtr * atr)
+bool  riskOkL = riskL > 0 and riskL <= maxRiskAtr * atr
+bool  riskOkS = riskS > 0 and riskS <= maxRiskAtr * atr
+
+float wSum  = w1 + w2 + w3
+float frac1 = wSum > 0 ? w1 / wSum : 1.0 / 3.0
+float frac2 = wSum > 0 ? w2 / wSum : 1.0 / 3.0
+
+// ═════════════════════════════ ESTADO DE LA OPERACIÓN ══════════════════════
+var int   tradeDir    = 0
+var float entryPrice  = na
+var float initStop    = na
+var float stopPrice   = na
+var float tp1         = na
+var float tp2         = na
+var float tp3         = na
+var bool  tp1Hit      = false
+var bool  tp2Hit      = false
+var int   entryBar    = na
+var int   entryTime   = na
+var float remFrac     = 0.0
+var float tradeR      = 0.0
+var int   lastExitBar = na
+var line  lnEntry     = na
+var line  lnStop      = na
+var line  lnTp1       = na
+var line  lnTp2       = na
+var line  lnTp3       = na
+
+// Estadísticas (en R)
+var int   statTrades    = 0
+var int   statWins      = 0
+var int   statLosses    = 0
+var int   statBE        = 0
+var float statSumR      = 0.0
+var float grossWinR     = 0.0
+var float grossLossR    = 0.0
+var float equityR       = 0.0
+var float peakR         = 0.0
+var float maxDDR        = 0.0
+var int   lossStreak    = 0
+var int   maxLossStreak = 0
+
+// Eventos de esta vela (se reinician en cada barra)
+bool   evSL      = false
+bool   evBE      = false
+bool   evTP1     = false
+bool   evTP2     = false
+bool   evTP3     = false
+bool   evExit    = false
+bool   evClosed  = false
+float  closedR   = na
+string exitWhy   = ""
+
+// ─────────────── Gestión de la operación abierta (desde la vela siguiente) ───────────────
+if tradeDir != 0 and bar_index > entryBar
+    float risk = math.abs(entryPrice - initStop)
+    if showLevels
+        line.set_x2(lnEntry, bar_index)
+        line.set_x2(lnStop, bar_index)
+        line.set_x2(lnTp1, bar_index)
+        line.set_x2(lnTp2, bar_index)
+        line.set_x2(lnTp3, bar_index)
+    bool hitStop = tradeDir == 1 ? low <= stopPrice : high >= stopPrice
+    if hitStop
+        // Supuesto conservador: si en la misma vela se tocan stop y objetivo, cuenta el stop
+        float stopR = (stopPrice - entryPrice) * tradeDir / risk
+        tradeR  += remFrac * stopR
+        remFrac := 0.0
+        if stopR < -0.01
+            evSL    := true
+            exitWhy := "Stop loss"
+        else
+            evBE    := true
+            exitWhy := stopR > 0.01 ? "Stop dinámico" : "Breakeven"
+    else
+        if not tp1Hit and remFrac > EPS and (tradeDir == 1 ? high >= tp1 : low <= tp1)
+            tp1Hit  := true
+            evTP1   := true
+            tradeR  += frac1 * tp1R
+            remFrac -= frac1
+            exitWhy := "TP1"
+            if moveBE
+                stopPrice := entryPrice
+                if showLevels
+                    lnStop := line.new(bar_index, stopPrice, bar_index, stopPrice, color = color.gray, style = line.style_dashed, width = 2)
+        if tp1Hit and not tp2Hit and remFrac > EPS and (tradeDir == 1 ? high >= tp2 : low <= tp2)
+            tp2Hit  := true
+            evTP2   := true
+            tradeR  += frac2 * tp2R
+            remFrac -= frac2
+            exitWhy := "TP2"
+            if trailToTp1
+                stopPrice := tp1
+                if showLevels
+                    lnStop := line.new(bar_index, stopPrice, bar_index, stopPrice, color = color.gray, style = line.style_dashed, width = 2)
+        if tp2Hit and remFrac > EPS and (tradeDir == 1 ? high >= tp3 : low <= tp3)
+            evTP3   := true
+            tradeR  += remFrac * tp3R
+            remFrac := 0.0
+            exitWhy := "TP3"
+        // Salidas discrecionales, siempre al cierre de la vela
+        bool oppExit  = exitOnOpp and (tradeDir == 1 ? baseShort : baseLong)
+        bool sessExit = flatOutside and useSession and not inSession
+        if remFrac > EPS and (oppExit or sessExit)
+            tradeR  += remFrac * (close - entryPrice) * tradeDir / risk
+            remFrac := 0.0
+            evExit  := true
+            exitWhy := oppExit ? "Señal contraria" : "Fin de sesión"
+    // Cierre de la operación y registro de estadísticas
+    if remFrac <= EPS
+        tradeR   -= costTicks * syminfo.mintick / risk
+        closedR  := tradeR
+        evClosed := true
+        if entryTime >= statsFrom
+            statTrades += 1
+            statSumR   += tradeR
+            if tradeR > 0
+                grossWinR += tradeR
+            else
+                grossLossR -= tradeR
+            if tradeR > 0.05
+                statWins   += 1
+                lossStreak := 0
+            else if tradeR < -0.05
+                statLosses    += 1
+                lossStreak    += 1
+                maxLossStreak := math.max(maxLossStreak, lossStreak)
+            else
+                statBE += 1
+            equityR += tradeR
+            peakR   := math.max(peakR, equityR)
+            maxDDR  := math.max(maxDDR, peakR - equityR)
+        if showResults
+            label.new(bar_index, tradeDir == 1 ? high : low, f_signR(tradeR) + " · " + exitWhy, yloc = tradeDir == 1 ? yloc.abovebar : yloc.belowbar, style = tradeDir == 1 ? label.style_label_down : label.style_label_up, color = color.new(tradeR >= 0 ? colBull : colBear, 55), textcolor = color.white, size = size.tiny)
+        tradeDir    := 0
+        lastExitBar := bar_index
+
+// ═════════════════════════════ SETUP, GATILLO Y ENTRADA ════════════════════
+bool barOk   = not confirmOnClose or barstate.isconfirmed
+bool dayOk   = maxTradesDay == 0 or tradesToday < maxTradesDay
+bool coolOk  = na(lastExitBar) or bar_index - lastExitBar >= cooldownBars
+bool canOpen = tradeDir == 0 and sessionOk and dayOk and coolOk and barOk
+
+bool setupL = baseLongLive and passL and canOpen
+bool setupS = baseShortLive and passS and canOpen
+
+var int   pendDir   = 0
+var float pendLevel = na
+var float pendInval = na
+var int   pendBar   = na
+var int   pendScore = 0
+
+bool entryL     = false
+bool entryS     = false
+bool newSetupL  = false
+bool newSetupS  = false
+int  entryScore = 0
+
+if useTrigger
+    // 1) ¿Se dispara o se cancela el setup pendiente?
+    if pendDir != 0 and bar_index > pendBar
+        bool expired = bar_index - pendBar > triggerWindow
+        bool broke   = pendDir == 1 ? close > pendLevel : close < pendLevel
+        bool invalid = pendDir == 1 ? close < pendInval : close > pendInval
+        bool stillOk = pendDir == 1 ? mandL : mandS
+        bool riskOk  = pendDir == 1 ? riskOkL : riskOkS
+        if not expired and broke and stillOk and riskOk and canOpen
+            entryL     := pendDir == 1
+            entryS     := pendDir == -1
+            entryScore := pendScore
+            pendDir    := 0
+        else if expired or invalid or not stillOk
+            pendDir := 0
+    // 2) Nuevo setup (reemplaza a uno pendiente anterior)
+    if not entryL and not entryS
+        if setupL
+            pendDir     := 1
+            pendLevel   := high
+            pendInval   := low
+            pendBar     := bar_index
+            pendScore   := scoreL
+            usedLongBar := baseLongBar
+            newSetupL   := true
+        else if setupS
+            pendDir      := -1
+            pendLevel    := low
+            pendInval    := high
+            pendBar      := bar_index
+            pendScore    := scoreS
+            usedShortBar := baseShortBar
+            newSetupS    := true
+else
+    if setupL and riskOkL
+        entryL      := true
+        entryScore  := scoreL
+        usedLongBar := baseLongBar
+    else if setupS and riskOkS
+        entryS       := true
+        entryScore   := scoreS
+        usedShortBar := baseShortBar
+
+if entryL or entryS
+    int   dir  = entryL ? 1 : -1
+    float risk = entryL ? riskL : riskS
+    entryPrice := close
+    initStop   := close - dir * risk
+    stopPrice  := initStop
+    tp1        := close + dir * risk * tp1R
+    tp2        := close + dir * risk * tp2R
+    tp3        := close + dir * risk * tp3R
+    tradeDir   := dir
+    entryBar   := bar_index
+    entryTime  := time
+    remFrac    := 1.0
+    tradeR     := 0.0
+    tp1Hit     := false
+    tp2Hit     := false
+    tradesToday += 1
+    string grade = f_grade(entryScore, enabledCount)
+    if showLevels
+        lnEntry := line.new(bar_index, entryPrice, bar_index, entryPrice, color = color.new(color.silver, 0), width = 2)
+        lnStop  := line.new(bar_index, stopPrice, bar_index, stopPrice, color = colBear, width = 2)
+        lnTp1   := line.new(bar_index, tp1, bar_index, tp1, color = color.new(colBull, 45), style = line.style_dashed)
+        lnTp2   := line.new(bar_index, tp2, bar_index, tp2, color = color.new(colBull, 25), style = line.style_dashed)
+        lnTp3   := line.new(bar_index, tp3, bar_index, tp3, color = colBull, width = 2)
+        linefill.new(lnEntry, lnStop, color.new(colBear, 88))
+        linefill.new(lnEntry, lnTp3, color.new(colBull, 90))
+    string tip = "Entrada: " + str.tostring(entryPrice, format.mintick) + "\nStop: " + str.tostring(initStop, format.mintick) + " (" + str.tostring(risk / atr, "0.0") + " ATR)" + "\nTP1 " + str.tostring(tp1R, "#.##") + "R: " + str.tostring(tp1, format.mintick) + "\nTP2 " + str.tostring(tp2R, "#.##") + "R: " + str.tostring(tp2, format.mintick) + "\nTP3 " + str.tostring(tp3R, "#.##") + "R: " + str.tostring(tp3, format.mintick) + "\nConfirmaciones: " + str.tostring(entryScore) + "/" + str.tostring(enabledCount)
+    if showLabels
+        string txt = (dir == 1 ? "▲ COMPRA " : "▼ VENTA ") + grade + " · " + str.tostring(entryScore) + "/" + str.tostring(enabledCount)
+        label.new(bar_index, dir == 1 ? low : high, txt, yloc = dir == 1 ? yloc.belowbar : yloc.abovebar, style = dir == 1 ? label.style_label_up : label.style_label_down, color = dir == 1 ? colBull : colBear, textcolor = color.white, size = size.small, tooltip = tip)
+    // Alerta dinámica con niveles (crear alerta con "Cualquier llamada a la función alert()")
+    string side = dir == 1 ? "COMPRA" : "VENTA"
+    alert("CEP " + side + " " + syminfo.ticker + " [" + timeframe.period + "] · Grado " + grade + " (" + str.tostring(entryScore) + "/" + str.tostring(enabledCount) + ") · Entrada " + str.tostring(entryPrice, format.mintick) + " · SL " + str.tostring(initStop, format.mintick) + " · TP1 " + str.tostring(tp1, format.mintick) + " · TP2 " + str.tostring(tp2, format.mintick) + " · TP3 " + str.tostring(tp3, format.mintick), alert.freq_once_per_bar_close)
+
+if evTP1 or evTP2 or evTP3 or evSL or evBE or evExit
+    string what  = evSL ? "STOP LOSS" : evBE ? "STOP PROTEGIDO (" + exitWhy + ")" : evExit ? "SALIDA (" + exitWhy + ")" : evTP3 ? "TP3" : evTP2 ? "TP2" : "TP1"
+    string extra = evClosed ? " · Operación cerrada " + f_signR(closedR) : ""
+    alert("CEP " + what + " " + syminfo.ticker + " [" + timeframe.period + "]" + extra, alert.freq_once_per_bar)
+
+// ═════════════════════════════ GRÁFICO ═════════════════════════════════════
+plot(showEmas ? emaTrend : na, "EMA tendencia", color = fSlopeL ? colBull : fSlopeS ? colBear : color.gray, linewidth = 2)
+plot(showEmas and htfActive ? htfEma : na, "EMA TF superior", color = color.new(color.orange, 10), linewidth = 2, style = plot.style_stepline)
+plot(showBaseLine and baseMode == BASE_ST ? stLine : na, "Supertrend", color = stDir < 0 ? color.new(colBull, 35) : color.new(colBear, 35), style = plot.style_linebr)
+plot(showBaseLine and baseMode == BASE_EMA ? emaFast : na, "EMA rápida", color = color.new(color.aqua, 20))
+plot(showBaseLine and baseMode == BASE_EMA ? emaSlow : na, "EMA lenta", color = color.new(color.fuchsia, 20))
+plot(showSetups and pendDir != 0 ? pendLevel : na, "Nivel de gatillo", color = pendDir == 1 ? colBull : colBear, style = plot.style_linebr)
+
+plotshape(entryL, title = "Compra confirmada", style = shape.triangleup, location = location.belowbar, color = colBull, size = size.tiny)
+plotshape(entryS, title = "Venta confirmada", style = shape.triangledown, location = location.abovebar, color = colBear, size = size.tiny)
+plotshape(showSetups and newSetupL, title = "Setup compra", style = shape.circle, location = location.belowbar, color = color.new(colBull, 50), size = size.tiny)
+plotshape(showSetups and newSetupS, title = "Setup venta", style = shape.circle, location = location.abovebar, color = color.new(colBear, 50), size = size.tiny)
+
+// Salidas para otros scripts / ventana de datos
+plot(entryL ? 1 : entryS ? -1 : 0, "CEP señal (+1 compra / -1 venta)", display = display.data_window)
+plot(scoreL, "CEP puntuación compra", display = display.data_window)
+plot(scoreS, "CEP puntuación venta", display = display.data_window)
+
+bool  trendBull = fTrendL and fSlopeL and (not htfActive or fHtfL)
+bool  trendBear = fTrendS and fSlopeS and (not htfActive or fHtfS)
+color bgCol     = not showBg ? na : useSession and not inSession ? color.new(color.gray, 90) : trendBull ? color.new(colBull, 94) : trendBear ? color.new(colBear, 94) : na
+bgcolor(bgCol, title = "Fondo de contexto")
+
+// ═════════════════════════════ ALERTAS ═════════════════════════════════════
+alertcondition(entryL, "CEP · Compra confirmada", "CEP: COMPRA confirmada en {{ticker}} ({{interval}}) a {{close}}")
+alertcondition(entryS, "CEP · Venta confirmada", "CEP: VENTA confirmada en {{ticker}} ({{interval}}) a {{close}}")
+alertcondition(entryL or entryS, "CEP · Cualquier entrada", "CEP: nueva entrada en {{ticker}} ({{interval}}) a {{close}}")
+alertcondition(newSetupL or newSetupS, "CEP · Setup pendiente (pre-aviso)", "CEP: setup pendiente en {{ticker}} ({{interval}}), esperando ruptura")
+alertcondition(evTP1, "CEP · TP1 alcanzado", "CEP: TP1 alcanzado en {{ticker}}")
+alertcondition(evTP2, "CEP · TP2 alcanzado", "CEP: TP2 alcanzado en {{ticker}}")
+alertcondition(evTP3, "CEP · TP3 alcanzado", "CEP: TP3 alcanzado en {{ticker}}")
+alertcondition(evSL, "CEP · Stop loss", "CEP: STOP LOSS en {{ticker}}")
+alertcondition(evBE, "CEP · Stop protegido (BE / dinámico)", "CEP: stop protegido ejecutado en {{ticker}}")
+alertcondition(evExit, "CEP · Salida por señal contraria o fin de sesión", "CEP: salida anticipada en {{ticker}} a {{close}}")
+
+// ═════════════════════════════ PANEL ═══════════════════════════════════════
+var table dash = table.new(tblPos, 3, 26, bgcolor = C_BG, frame_color = color.new(color.gray, 60), frame_width = 1, border_color = color.new(color.gray, 85), border_width = 1)
+
+if showDash and barstate.isfirst
+    for r = 16 to 25
+        if r == 19
+            table.merge_cells(dash, 0, r, 2, r)
+        else
+            table.merge_cells(dash, 1, r, 2, r)
+
+if showDash and barstate.islast
+    f_cell(dash, 0, 0, "CEP · " + baseMode, C_TXT, C_HEAD)
+    f_cell(dash, 1, 0, "▲", colBull, C_HEAD)
+    f_cell(dash, 2, 0, "▼", colBear, C_HEAD)
+    f_row(dash, 1, "Precio vs EMA " + str.tostring(trendLen), useTrend, fTrendL, fTrendS)
+    f_row(dash, 2, "Pendiente EMA " + str.tostring(trendLen), useSlope, fSlopeL, fSlopeS)
+    f_row(dash, 3, htfActive ? "Tendencia TF " + htfTF : "TF superior (inactivo)", htfActive, fHtfL, fHtfS)
+    f_row(dash, 4, "ADX ≥ " + str.tostring(adxMin) + " (" + str.tostring(adx, "0.0") + ")", useADX, fAdx, fAdx)
+    f_row(dash, 5, "DI+ / DI−", useDI, fDiL, fDiS)
+    f_row(dash, 6, "RSI (" + str.tostring(rsi, "0.0") + ")", useRSI, fRsiL, fRsiS)
+    f_row(dash, 7, "Histograma MACD", useMACD, fMacdL, fMacdS)
+    f_row(dash, 8, "Choppiness (" + str.tostring(chop, "0.0") + ")", useChop, fChop, fChop)
+    f_row(dash, 9, hasVolume ? "Volumen > media" : "Volumen (sin datos)", volActive, fVol, fVol)
+    f_row(dash, 10, "Régimen ATR (" + str.tostring(atrRatio, "0.00") + "x)", useAtrReg, fAtrReg, fAtrReg)
+    f_row(dash, 11, "Vela de confirmación", useCandle, fCandleL, fCandleS)
+    f_row(dash, 12, "Anti-persecución", useChase, fChaseL, fChaseS)
+    f_row(dash, 13, "Vela no gigante", useBigBar, fBigBar, fBigBar)
+    f_cell(dash, 0, 14, "Puntuación (mín. " + str.tostring(required) + ")", C_TXT, C_HEAD)
+    f_cell(dash, 1, 14, str.tostring(scoreL) + "/" + str.tostring(enabledCount), passL ? colBull : C_MUTED, C_HEAD)
+    f_cell(dash, 2, 14, str.tostring(scoreS) + "/" + str.tostring(enabledCount), passS ? colBear : C_MUTED, C_HEAD)
+    f_row(dash, 15, "Señal base vigente", true, baseLongLive, baseShortLive)
+
+    // Estado actual
+    float openR    = tradeDir != 0 ? (close - entryPrice) * tradeDir / math.abs(entryPrice - initStop) : na
+    string stateTx = tradeDir == 1 ? "LARGO " + str.tostring(entryPrice, format.mintick) + " · " + f_signR(openR) : tradeDir == -1 ? "CORTO " + str.tostring(entryPrice, format.mintick) + " · " + f_signR(openR) : pendDir == 1 ? "Setup ▲ gatillo > " + str.tostring(pendLevel, format.mintick) : pendDir == -1 ? "Setup ▼ gatillo < " + str.tostring(pendLevel, format.mintick) : "Esperando señal"
+    color  stateCl = tradeDir == 1 or pendDir == 1 ? colBull : tradeDir == -1 or pendDir == -1 ? colBear : C_MUTED
+    f_cell(dash, 0, 16, "Sesión", C_TXT, C_BG)
+    f_cell(dash, 1, 16, not useSession ? "Sin filtro" : inSession ? "Dentro" : "Fuera", not useSession ? C_MUTED : inSession ? colBull : colBear, C_BG)
+    f_cell(dash, 0, 17, "Estado", C_TXT, C_BG)
+    f_cell(dash, 1, 17, stateTx, stateCl, C_BG)
+
+    // Tamaño de posición sugerido
+    float riskMoney = accountSize * riskPct / 100
+    float riskPts   = tradeDir != 0 ? math.abs(entryPrice - initStop) : riskL
+    float qty       = riskPts > 0 and syminfo.pointvalue > 0 ? riskMoney / (riskPts * syminfo.pointvalue) : na
+    f_cell(dash, 0, 18, "Tamaño sugerido", C_TXT, C_BG)
+    f_cell(dash, 1, 18, na(qty) ? "—" : str.tostring(qty, "0.00") + " uds · riesgo " + str.tostring(riskMoney, "0") + " " + syminfo.currency, C_TXT, C_BG)
+
+    // Estadísticas
+    float winRate = statTrades > 0 ? 100.0 * statWins / statTrades : na
+    float expR    = statTrades > 0 ? statSumR / statTrades : na
+    string pfTx   = grossLossR > 0 ? str.tostring(grossWinR / grossLossR, "0.00") : statTrades > 0 ? "∞" : "—"
+    f_cell(dash, 0, 19, "ESTADÍSTICAS desde " + str.format_time(statsFrom, "yyyy-MM-dd", syminfo.timezone) + (statTrades < 30 ? " · muestra pequeña" : ""), statTrades < 30 ? color.orange : C_TXT, C_HEAD)
+    f_cell(dash, 0, 20, "Operaciones (G/P/BE)", C_TXT, C_BG)
+    f_cell(dash, 1, 20, str.tostring(statTrades) + " (" + str.tostring(statWins) + "/" + str.tostring(statLosses) + "/" + str.tostring(statBE) + ")", C_TXT, C_BG)
+    f_cell(dash, 0, 21, "Acierto", C_TXT, C_BG)
+    f_cell(dash, 1, 21, statTrades > 0 ? str.tostring(winRate, "0.0") + "%" : "—", C_TXT, C_BG)
+    f_cell(dash, 0, 22, "Profit factor", C_TXT, C_BG)
+    f_cell(dash, 1, 22, pfTx, grossWinR >= grossLossR ? colBull : colBear, C_BG)
+    f_cell(dash, 0, 23, "Expectativa por operación", C_TXT, C_BG)
+    f_cell(dash, 1, 23, statTrades > 0 ? f_signR(expR) : "—", statTrades > 0 and expR > 0 ? colBull : colBear, C_BG)
+    f_cell(dash, 0, 24, "R total · máx. drawdown", C_TXT, C_BG)
+    f_cell(dash, 1, 24, f_signR(equityR) + " · " + str.tostring(maxDDR, "0.00") + "R", C_TXT, C_BG)
+    f_cell(dash, 0, 25, "Racha perdedora máx.", C_TXT, C_BG)
+    f_cell(dash, 1, 25, str.tostring(maxLossStreak), C_TXT, C_BG)
