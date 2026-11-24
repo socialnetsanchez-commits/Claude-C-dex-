@@ -2,70 +2,74 @@
 
 | Archivo | Para qué |
 |---|---|
-| [`SMC_Confirm_Pro.pine`](SMC_Confirm_Pro.pine) | **Principal.** Estilo smart money como *Piply Indicator v2*: sesiones, BOS/CHoCH, order blocks, zonas M15/M30 SELL/BUY, perfil de volumen con POC y máximo/mínimo fuerte/débil, más señales con confirmación y gestión del riesgo. |
+| [`SMC_Confirm_Pro.pine`](SMC_Confirm_Pro.pine) | **Principal.** Solo cinco herramientas: perfil de liquidez, zonas SELL/BUY de temporalidades superiores, order blocks swing fuertes con su tasa de reacción medida, SMT y MSS. |
 | [`CEP_Confirmation_Engine_Pro.pine`](CEP_Confirmation_Engine_Pro.pine) | Capa de 13 filtros para validar las señales de cualquier otro indicador. |
 
 > No es asesoramiento financiero. Ningún indicador garantiza resultados. Mide siempre fuera de muestra antes de arriesgar dinero.
 
 ## SMC Confirm Pro
 
-### Qué dibuja
+Muestra solo cinco herramientas, todas configurables desde los ajustes:
 
-| Elemento | Cómo se ve |
-|---|---|
-| Sesiones | Cajas grises con el nombre debajo: **Tokio**, **Londres** y **Nueva York**. Cada una tiene su zona horaria, así que el horario de verano se ajusta solo. |
-| Estructura swing | Línea continua y etiqueta **BOS** o **CHoCH** (pivotes de 50 velas). |
-| Estructura interna | Línea discontinua y etiqueta pequeña **BOS** o **CHoCH** (pivotes de 5 velas). |
-| Order blocks | Cajas verdes (demanda) y rojas (oferta) que se alargan hasta que el precio las mitiga y entonces se detienen. |
-| Zonas MTF | Cajas con línea media discontinua y texto **M15 SELL**, **M30 SELL**, **H1 BUY**... Muestran la última zona sin mitigar de cada temporalidad. |
-| Perfil de volumen | Histograma del día anclado a su inicio: gris para compras y rojo para ventas. Incluye la línea **POC** del día y deja dibujada la de los días anteriores. |
-| Liquidez | Líneas **Máximo fuerte/débil** y **Mínimo fuerte/débil** hacia la derecha. |
+| # | Herramienta | Qué ves en el gráfico |
+|---|---|---|
+| 1 | **Perfil de liquidez** | Histograma de volumen por precio del día, la semana, el mes o las últimas N velas: gris para compras y rojo para ventas. Incluye la línea **POC** con su precio, el value area (VAH/VAL) y los POC de periodos anteriores, que siguen extendiéndose mientras ningún precio los toque (POC vírgenes). |
+| 2 | **Zonas SELL / BUY** | Cajas **M15 SELL**, **M30 SELL**, **H1 BUY**... con línea media discontinua. Muestran la última zona sin mitigar de cada temporalidad, calculada solo con velas cerradas (no repinta). |
+| 3 | **Order blocks swing fuertes** | Solo los OB que cumplen los filtros de calidad. El texto **OB ★★** indica cuántos criterios cumple, y una tabla mide cuántos reaccionaron de verdad. |
+| 4 | **SMT** | Línea entre dos máximos (o mínimos) cuando el gráfico y el activo correlacionado no confirman el mismo movimiento. |
+| 5 | **MSS** | Cambio de estructura con etiqueta rellena **MSS**: línea continua para el swing y discontinua para el interno. No se muestra ni BOS ni CHoCH. |
 
-### Cuándo da una señal
+### Cómo se decide que un OB es "fuerte"
 
-1. **Toque de zona:** el precio entra en un order block o en una zona MTF de oferta (para vender) o de demanda (para comprar).
-2. **Confirmación estructural:** en las 12 velas siguientes aparece un **BOS o CHoCH interno** a favor. Esto indica que el precio ha reaccionado en la zona.
-3. **Filtros obligatorios** (desactivables): estructura swing a favor y sesión de Londres o Nueva York.
-4. **Puntuación mínima** (5 de 8):
-   1. Estructura swing a favor.
-   2. La zona tocada es de una temporalidad superior.
-   3. Vende en *premium* (sobre el 50 % del rango) o compra en *descuento*.
-   4. Sesión de Londres o Nueva York.
-   5. Vela de ruptura con cuerpo ≥ 50 % (desplazamiento).
-   6. Volumen por encima de la media.
-   7. Precio del lado correcto de la EMA 200.
-   8. Hay recorrido hasta la liquidez opuesta de al menos TP2.
-5. **Riesgo válido:** el stop va detrás del extremo alcanzado en la zona más 0,3 ATR. Si supera 4 ATR, la señal se descarta.
+Un OB se dibuja solo si cumple todos los filtros activos:
 
-La etiqueta muestra **▼ SELL A · 7/8**. Pasa el ratón para ver entrada, stop y objetivos. Cada toque de zona solo puede dar una señal.
+- **Desplazamiento** (por defecto): en las 3 velas siguientes al OB, el precio se aleja al menos 1 ATR. Para ser más estricto, súbelo a 1,5.
+- **FVG** (por defecto): esas mismas velas dejan un hueco de liquidez.
+- **Altura máxima** (por defecto): el OB mide como mucho 3 ATR, para evitar zonas enormes.
+- **Barrido de liquidez** (opcional): el OB rompe los mínimos (o máximos) de las 20 velas anteriores.
+- **Volumen** (opcional): las velas del impulso tienen volumen por encima de la media.
 
-**Gestión:** TP1, TP2 y TP3 en 1R, 2R y 3R con parciales del 33/33/34 %. El stop pasa a breakeven tras TP1 y a TP1 tras TP2. Como opción, cierra si aparece un CHoCH interno en contra.
+Cada OB se extiende hasta que una vela cierra al otro lado (o lo atraviesa con la mecha, si eliges *Mecha*).
 
-### Configuración recomendada para XAUUSD 15 m
+**Tabla de reacción:** cuenta los OB que, tras el primer toque, se alejaron al menos 1,5 ATR antes de ser mitigados. Si en la misma vela ocurren las dos cosas, cuenta como fallo. Es una medición en tu gráfico, no una promesa. Con menos de 30 casos aparece "muestra pequeña" y el porcentaje todavía no significa nada.
 
-| Input | Valor inicial | Nota |
-|---|---:|---|
-| Estructura swing / interna | 50 / 5 | Igual que en la captura |
-| Zonas MTF | M15, M30, H1 (H4 opcional) | Las TF menores que el gráfico se ignoran solas |
-| Confirmaciones mínimas | 5 de 8 | Súbelo a 6 para menos señales y más selectivas |
-| Barras para confirmar tras tocar la zona | 12 | 3 horas en 15 m |
-| Solo Londres o Nueva York | Sí | En oro, Tokio suele ser rango |
-| Coste ida+vuelta | 25 ticks | 0,25 $ de spread en XAUUSD; GC: 2 ticks |
-| Máx. operaciones por día | 3 | |
+### Cómo se detecta el SMT
 
-Si la caja de sesión no coincide con tu bróker, ajusta solo el horario. Cada sesión ya usa la hora local de su ciudad.
+- En **modo automático** compara NQ↔ES, YM/RTY→ES, GC↔SI, XAUUSD↔XAGUSD, EURUSD↔GBPUSD y NAS100/US30→SPX500. Si tu activo no está en la lista, usa el símbolo manual.
+- **SMT bajista:** en dos máximos seguidos, uno de los activos hace un máximo más alto y el otro no.
+- **SMT alcista:** lo mismo con los mínimos.
+- Para activos con correlación inversa, como EURUSD frente a DXY, activa *Correlación inversa*.
+- El activo comparado necesita datos en tu cuenta de TradingView. Si no los tiene, simplemente no aparecen SMT.
+
+### Valores iniciales
+
+| Ajuste | NQ / ES 5 m | XAUUSD 15 m |
+|---|---|---|
+| Perfil · periodo | Día | Día |
+| Zonas · temporalidades | M15, M30, H1 | M30, H1, H4 |
+| OB · longitud de swing | 25 | 20 |
+| SMT · comparación | Automático (ES) | Automático (XAGUSD) |
+| MSS · swing / interno | 25 / 5 | 20 / 5 |
 
 ### Alertas
 
-- **Cualquier llamada a la función alert()**: entrada con SL y TP1-TP3 en el mensaje, y avisos de TP, stop y cierre.
-- Condiciones sueltas: *Compra/Venta confirmada*, *Precio en zona de oferta/demanda* (pre-aviso), *CHoCH swing alcista/bajista*, *TP1/TP2/TP3*, *Stop loss* y *Stop protegido*.
+- **Confluencia bajista o alcista:** el precio toca una zona SELL o un OB bajista, aparece un SMT bajista y luego un MSS bajista, todo dentro de 20 velas (y al revés para compras). Es la alerta más selectiva.
+- **Alertas sueltas:** MSS swing e interno, SMT, nuevo OB, precio toca un OB y precio entra en una zona SELL o BUY.
 
-### Limitaciones específicas
+### Comprobaciones hechas
 
-- Las zonas MTF se calculan con velas ya cerradas de esa temporalidad. Aparecen un poco más tarde que en indicadores que repintan, pero no cambian hacia atrás.
-- Cada temporalidad muestra solo su última zona sin mitigar por lado. Las más antiguas no se dibujan.
-- El perfil de volumen usa el volumen que da el bróker. En CFD como XAUUSD es volumen de ticks, que es útil como aproximación pero no es volumen real de contratos.
-- Los BOS y CHoCH se confirman `longitud` velas después del pivote. Es inevitable si no se quiere repintar.
+- El código pasa un analizador sintáctico de Pine Script.
+- La indentación y el orden de las declaraciones están revisados.
+- Las 80 funciones integradas que usa existen en Pine v6.
+- No hay lecturas del historial dentro de llamadas condicionales.
+- La lógica de estructura, OB y value area se simuló en Python con datos sintéticos.
+- No se ha podido compilar en el propio TradingView desde este entorno. Si el editor muestra un error, pégalo y se corrige.
+
+### Limitaciones
+
+- Los MSS y SMT se confirman unas velas después del pivote (la longitud elegida). Así no repintan.
+- En CFD como XAUUSD el volumen es de ticks: el perfil es una aproximación de dónde se negoció, no volumen real de contratos.
+- Cada temporalidad muestra solo su última zona SELL y BUY sin mitigar.
 
 ---
 
