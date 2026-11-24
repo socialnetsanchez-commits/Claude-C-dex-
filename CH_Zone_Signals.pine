@@ -1,12 +1,15 @@
 //@version=6
 // ════════════════════════════════════════════════════════════════════════════
 //  CH Zone Signals by Sanchez · Pine Script v6
-//  Dos herramientas:
+//  Herramientas:
 //   1) Zonas BUY / SELL de temporalidades superiores ("H1 SELL", "M30 BUY"...)
 //      filtradas a favor de la EMA 50 y de la estructura mayor de esa TF.
 //   2) Order blocks swing filtrados a favor de la EMA 200, de la estructura
 //      mayor y con volumen por encima de la media en su origen. Los OB A+
 //      están además dentro de una zona BUY / SELL de temporalidad superior.
+//   3) Sesiones Tokio / Londres / Nueva York (cajas con su nombre debajo).
+//   4) Perfil de liquidez de cada día y del día en curso (en vivo): compradores,
+//      vendedores, POC, VAH / VAL y, opcionalmente, datos compras × ventas.
 //  Los filtros se eligieron midiendo la reacción en datos reales (EURUSD H1,
 //  S&P 500 y GOOG diarios, separando dentro y fuera de muestra). La tabla
 //  mide la reacción en TU gráfico: es una estadística, no una promesa.
@@ -19,7 +22,9 @@ indicator("CH Zone Signals by Sanchez", shorttitle = "CH Zones", overlay = true,
 const string G_ZN = "1 · Zonas BUY / SELL"
 const string G_OB = "2 · Order blocks swing"
 const string G_ST = "3 · Medición de la reacción"
-const string G_UI = "4 · Estilo"
+const string G_SS = "4 · Sesiones"
+const string G_VP = "5 · Perfil de liquidez diario"
+const string G_UI = "6 · Estilo"
 
 const string ST_SOLID  = "Continua"
 const string ST_DASHED = "Discontinua"
@@ -35,6 +40,9 @@ const string MIT_CLOSE = "Cierre"
 const string MIT_WICK  = "Mecha"
 const string TH_DARK   = "Oscuro"
 const string TH_LIGHT  = "Claro"
+const string PR_AUTO   = "Automática (velas inferiores)"
+const string PR_CUSTOM = "Temporalidad inferior elegida"
+const string PR_CHART  = "Velas del gráfico (aproximada)"
 const int    BUF       = 400    // velas guardadas para localizar order blocks
 
 // ═══════════════════════════════ INPUTS ════════════════════════════════════
@@ -79,7 +87,49 @@ float  reactAtr = input.float(1.5, "Reacción mínima (ATR ×)", minval = 0.25, 
 float  reactR   = input.float(1.5, "Reacción mínima en R", minval = 0.25, step = 0.25, group = G_ST, tooltip = "R = riesgo de entrar en el borde de la zona con el stop en el borde lejano (altura de la zona, mínimo 1 ATR). Es la medida honesta en temporalidades bajas como M3: allí el ATR es pequeño frente a zonas de M15 / H1 y la medida en ATR sale inflada.")
 string statsPos = input.string(POS_BR, "Posición", options = [POS_TR, POS_TL, POS_BR, POS_BL], group = G_ST)
 
-// 4 · Estilo (solo afecta al aspecto, no a los cálculos)
+// 4 · Sesiones (cada una con su zona horaria: el horario de verano se ajusta solo)
+bool   sesShow  = input.bool(true, "Mostrar sesiones", group = G_SS, inline = "ss")
+int    sesKeep  = input.int(10, "últimos días", minval = 1, maxval = 60, group = G_SS, inline = "ss", tooltip = "Las sesiones más antiguas se borran para no agotar el límite de dibujos de TradingView (500 cajas).")
+bool   s1On     = input.bool(true, "", group = G_SS, inline = "s1")
+string s1Name   = input.string("Tokio", "", group = G_SS, inline = "s1")
+string s1Sess   = input.session("0900-1800", "", group = G_SS, inline = "s1")
+string s1Tz     = input.string("Asia/Tokyo", "", group = G_SS, inline = "s1")
+bool   s2On     = input.bool(true, "", group = G_SS, inline = "s2")
+string s2Name   = input.string("Londres", "", group = G_SS, inline = "s2")
+string s2Sess   = input.session("0800-1700", "", group = G_SS, inline = "s2")
+string s2Tz     = input.string("Europe/London", "", group = G_SS, inline = "s2")
+bool   s3On     = input.bool(true, "", group = G_SS, inline = "s3")
+string s3Name   = input.string("Nueva York", "", group = G_SS, inline = "s3")
+string s3Sess   = input.session("0800-1700", "", group = G_SS, inline = "s3")
+string s3Tz     = input.string("America/New_York", "", group = G_SS, inline = "s3")
+color  sesBg    = input.color(color.new(#787b86, 82), "Caja", group = G_SS, inline = "sc")
+color  sesText  = input.color(#787b86, "Nombre", group = G_SS, inline = "sc")
+string sesTxtSz = input.string(SZ_NORMAL, "", options = [SZ_TINY, SZ_SMALL, SZ_NORMAL], group = G_SS, inline = "sc")
+
+// 5 · Perfil de liquidez diario (cada día + el día en curso en vivo)
+bool   vpShow      = input.bool(true, "Mostrar perfiles de liquidez", group = G_VP)
+int    vpPastDays  = input.int(4, "Días anteriores", minval = 0, maxval = 7, group = G_VP, tooltip = "Cada día terminado deja su perfil dibujado. TradingView limita los dibujos a 500 cajas, por eso el máximo es 7.")
+int    vpRows      = input.int(25, "Filas", minval = 5, maxval = 60, group = G_VP)
+string vpPrec      = input.string(PR_AUTO, "Datos de compras / ventas", options = [PR_AUTO, PR_CUSTOM, PR_CHART], group = G_VP, inline = "pr", tooltip = "Automática: usa velas de temporalidad inferior (1 min en gráficos de hasta 15 min, 5 min hasta 1 h...). Cada vela inferior suma su volumen en su propio rango de precio: compra si cierra por encima de su apertura, venta si cierra por debajo y mitad y mitad si es un doji. Si un día antiguo no tiene datos inferiores, se usa la vela del gráfico.")
+string vpLtfIn     = input.timeframe("1", "", group = G_VP, inline = "pr")
+int    vpWidthPct  = input.int(50, "Ancho máximo (% del día)", minval = 10, maxval = 100, group = G_VP)
+float  vpGap       = input.float(10, "Separación entre filas (%)", minval = 0, maxval = 80, step = 5, group = G_VP)
+color  vpBuyCol    = input.color(color.new(#e0e0e0, 10), "Compradores", group = G_VP, inline = "vpc")
+color  vpSellCol   = input.color(color.new(#1c1c1c, 10), "Vendedores", group = G_VP, inline = "vpc")
+bool   vpDataOn    = input.bool(false, "Datos compradores × vendedores", group = G_VP, inline = "vd", tooltip = "Escribe en cada fila el volumen comprador × vendedor (p. ej. 28.16K × 37.96K) y el total del día debajo.")
+bool   vpDataPast  = input.bool(false, "también en días anteriores", group = G_VP, inline = "vd")
+color  vpTextCol   = input.color(#2962ff, "Color de los datos", group = G_VP, inline = "vtx")
+color  vpTotalCol  = input.color(#651fff, "total", group = G_VP, inline = "vtx")
+string vpTextSize  = input.string(SZ_SMALL, "", options = [SZ_TINY, SZ_SMALL, SZ_NORMAL], group = G_VP, inline = "vtx")
+bool   pocShow     = input.bool(true, "POC", group = G_VP, inline = "poc")
+color  pocCol      = input.color(#e53935, "", group = G_VP, inline = "poc")
+int    pocWidth    = input.int(2, "grosor", minval = 1, maxval = 5, group = G_VP, inline = "poc")
+bool   vaShow      = input.bool(true, "VAH / VAL", group = G_VP, inline = "va")
+float  vaPct       = input.float(70, "value area %", minval = 10, maxval = 100, step = 5, group = G_VP, inline = "va")
+color  vaLineCol   = input.color(#e53935, "", group = G_VP, inline = "va")
+int    vaOutTransp = input.int(45, "Transparencia extra fuera del value area", minval = 0, maxval = 100, group = G_VP)
+
+// 6 · Estilo (solo afecta al aspecto, no a los cálculos)
 string uiTheme    = input.string(TH_DARK, "Fondo del gráfico", options = [TH_DARK, TH_LIGHT], group = G_UI, tooltip = "Ajusta los textos y la tabla para que se lean bien sobre tu fondo.")
 color  buyCol     = input.color(#22ab94, "BUY / alcista", group = G_UI, inline = "col")
 color  sellCol    = input.color(#f7525f, "SELL / bajista", group = G_UI, inline = "col")
@@ -124,6 +174,11 @@ type OB
     int   touchBar = na
     bool  resolved = false
     bool  resolvedR = false
+
+// Dibujos de un perfil completo (para poder borrarlo entero)
+type DayProfile
+    array<box>  bxs
+    array<line> lns
 
 // ═════════════════════════════ FUNCIONES ═══════════════════════════════════
 f_lineStyle(string s) => s == ST_SOLID ? line.style_solid : s == ST_DASHED ? line.style_dashed : line.style_dotted
@@ -431,6 +486,119 @@ f_statRow(table t, int r, string name, int w, int lo, int wR, int loR) =>
     f_rateCell(t, 1, r, w, lo)
     f_rateCell(t, 2, r, wR, loR)
 
+// ─────────────── Sesiones y perfil de liquidez (independientes del resto) ───────────────
+// Caja de sesión que crece con su rango y nombre centrado debajo
+f_session(bool show, bool inS, string name, array<box> bxs, array<label> lbs) =>
+    var box   b  = na
+    var label lb = na
+    bool started = inS and not inS[1]
+    if show and started
+        b  := box.new(bar_index, high, bar_index, low, border_color = C_NONE, bgcolor = sesBg)
+        lb := label.new(bar_index, low, name, style = label.style_label_up, color = C_NONE, textcolor = sesText, size = f_size(sesTxtSz))
+        array.push(bxs, b)
+        array.push(lbs, lb)
+    else if show and inS and not na(b)
+        float bot = math.min(box.get_bottom(b), low)
+        box.set_top(b, math.max(box.get_top(b), high))
+        box.set_bottom(b, bot)
+        box.set_right(b, bar_index)
+        label.set_xy(lb, box.get_left(b) + int((bar_index - box.get_left(b)) / 2), bot)
+    inS
+
+// Temporalidad inferior automática para clasificar compras y ventas
+f_autoLtf(int s) => s < 60 ? timeframe.period : s <= 900 ? "1" : s <= 3600 ? "5" : s <= 14400 ? "15" : "60"
+
+f_fmtVol(float v) => v >= 1000000 ? str.tostring(v / 1000000, "#.##") + "M" : v >= 1000 ? str.tostring(v / 1000, "#.##") + "K" : str.tostring(v, "#")
+
+// Reparte el volumen comprador y vendedor de cada vela entre las filas de precio que cubre
+f_profile(array<float> hs, array<float> ls, array<float> bs, array<float> ss, int rows) =>
+    float top   = array.max(hs)
+    float btm   = array.min(ls)
+    float step  = (top - btm) / rows
+    array<float> buyV  = array.new<float>(rows, 0.0)
+    array<float> sellV = array.new<float>(rows, 0.0)
+    if step > 0
+        for i = 0 to array.size(hs) - 1
+            float h   = array.get(hs, i)
+            float l   = array.get(ls, i)
+            float vb  = array.get(bs, i)
+            float vsl = array.get(ss, i)
+            int   r0  = math.max(0, math.min(rows - 1, int(math.floor((l - btm) / step))))
+            int   r1  = math.max(0, math.min(rows - 1, int(math.floor((h - btm) / step))))
+            float rng = h - l
+            for r = r0 to r1
+                float rowLo = btm + r * step
+                float share = rng > 0 ? math.max(math.min(h, rowLo + step) - math.max(l, rowLo), 0) / rng : 1.0 / (r1 - r0 + 1)
+                array.set(buyV, r, array.get(buyV, r) + vb * share)
+                array.set(sellV, r, array.get(sellV, r) + vsl * share)
+    [btm, step, buyV, sellV]
+
+// Value area: crece desde el POC hacia la fila vecina con más volumen
+f_valueArea(array<float> tot, int pocRow, float pct) =>
+    int   n      = array.size(tot)
+    float target = array.sum(tot) * pct / 100
+    float acc    = array.get(tot, pocRow)
+    int   up     = pocRow
+    int   dn     = pocRow
+    while acc < target and (up < n - 1 or dn > 0)
+        float vUp = up < n - 1 ? array.get(tot, up + 1) : -1.0
+        float vDn = dn > 0 ? array.get(tot, dn - 1) : -1.0
+        if vUp >= vDn
+            up  += 1
+            acc += vUp
+        else
+            dn  -= 1
+            acc += vDn
+    [up, dn]
+
+f_fade(color c, bool keep) => keep ? c : color.new(c, math.min(100, color.t(c) + vaOutTransp))
+
+// Dibuja un perfil completo: compradores (claro) y vendedores (oscuro) por fila,
+// datos compras × ventas opcionales con el total debajo, POC y VAH / VAL.
+f_drawProfile(array<float> hs, array<float> ls, array<float> bs, array<float> ss, int x0, int xEnd, int wMax, int txtW, bool withText) =>
+    DayProfile dp = DayProfile.new(array.new<box>(), array.new<line>())
+    [cBtm, cStep, cBuy, cSell] = f_profile(hs, ls, bs, ss, vpRows)
+    array<float> cTot = array.new<float>(vpRows, 0.0)
+    for r = 0 to vpRows - 1
+        array.set(cTot, r, array.get(cBuy, r) + array.get(cSell, r))
+    float cMax = array.max(cTot)
+    if cMax > 0 and cStep > 0
+        int pocRow = array.indexof(cTot, cMax)
+        [vaUp, vaDn] = f_valueArea(cTot, pocRow, vaPct)
+        string tSize = f_size(vpTextSize)
+        for r = 0 to vpRows - 1
+            float lo   = cBtm + r * cStep
+            float hi   = lo + cStep * (1 - vpGap / 100)
+            float bv   = array.get(cBuy, r)
+            float sv   = array.get(cSell, r)
+            bool  inVA = not vaShow or (r >= vaDn and r <= vaUp)
+            int   wB   = int(math.round(bv / cMax * wMax))
+            int   wS   = int(math.round(sv / cMax * wMax))
+            if wB > 0
+                array.push(dp.bxs, box.new(x0, hi, x0 + wB, lo, border_color = C_NONE, bgcolor = f_fade(vpBuyCol, inVA)))
+            if wS > 0
+                array.push(dp.bxs, box.new(x0 + wB, hi, x0 + wB + wS, lo, border_color = C_NONE, bgcolor = f_fade(vpSellCol, inVA)))
+            if withText
+                array.push(dp.bxs, box.new(x0, hi, x0 + txtW, lo, border_color = C_NONE, bgcolor = C_NONE, text = f_fmtVol(bv) + " × " + f_fmtVol(sv), text_color = vpTextCol, text_size = tSize, text_halign = text.align_left, text_valign = text.align_center, text_wrap = text.wrap_none))
+        if withText
+            array.push(dp.bxs, box.new(x0, cBtm - cStep * 0.1, x0 + txtW, cBtm - cStep * 1.1, border_color = C_NONE, bgcolor = C_NONE, text = f_fmtVol(array.sum(cBuy)) + " × " + f_fmtVol(array.sum(cSell)), text_color = vpTotalCol, text_size = tSize, text_halign = text.align_left, text_valign = text.align_center, text_wrap = text.wrap_none))
+        if pocShow
+            float pocPrice = cBtm + (pocRow + 0.5) * cStep
+            array.push(dp.lns, line.new(x0, pocPrice, xEnd, pocPrice, color = pocCol, width = pocWidth))
+        if vaShow
+            float vah = cBtm + (vaUp + 1) * cStep
+            float val = cBtm + vaDn * cStep
+            array.push(dp.lns, line.new(x0, vah, xEnd, vah, color = vaLineCol, style = line.style_dashed))
+            array.push(dp.lns, line.new(x0, val, xEnd, val, color = vaLineCol, style = line.style_dashed))
+    dp
+
+f_deleteProfile(DayProfile dp) =>
+    for b in dp.bxs
+        box.delete(b)
+    for l in dp.lns
+        line.delete(l)
+    true
+
 // ═════════════════════════════ 1 · ZONAS BUY / SELL (datos) ════════════════
 // Se calculan antes que los OB para poder detectar la confluencia (OB A+)
 int  chartSec = timeframe.in_seconds()
@@ -564,6 +732,81 @@ if znShow and barstate.islast
     f_zone(znBoxes, znLines, znLabels, tf3Ok and znBuyOn and not x3b, z3BullTop, z3BullBtm, z3BullT, "▲ " + f_tfLabel(tf3) + " BUY", buyCol, true)
     f_zone(znBoxes, znLines, znLabels, tf4Ok and znSellOn and not x4s, z4BearTop, z4BearBtm, z4BearT, "▼ " + f_tfLabel(tf4) + " SELL", sellCol, false)
     f_zone(znBoxes, znLines, znLabels, tf4Ok and znBuyOn and not x4b, z4BullTop, z4BullBtm, z4BullT, "▲ " + f_tfLabel(tf4) + " BUY", buyCol, true)
+
+// ═════════════════════════════ 3 · SESIONES ═══════════════════════════════
+bool inTok = not na(time(timeframe.period, s1Sess, s1Tz))
+bool inLon = not na(time(timeframe.period, s2Sess, s2Tz))
+bool inNy  = not na(time(timeframe.period, s3Sess, s3Tz))
+bool sesTf = chartSec <= 3600
+var array<box>   sesBoxes  = array.new<box>()
+var array<label> sesLabels = array.new<label>()
+f_session(sesShow and s1On and sesTf, inTok, s1Name, sesBoxes, sesLabels)
+f_session(sesShow and s2On and sesTf, inLon, s2Name, sesBoxes, sesLabels)
+f_session(sesShow and s3On and sesTf, inNy, s3Name, sesBoxes, sesLabels)
+// Solo se conservan las sesiones de los últimos días (límite de dibujos)
+while array.size(sesBoxes) > sesKeep * 3
+    box.delete(array.shift(sesBoxes))
+while array.size(sesLabels) > sesKeep * 3
+    label.delete(array.shift(sesLabels))
+
+// ═════════════════════════════ 4 · PERFIL DE LIQUIDEZ DIARIO ═══════════════
+bool   vpAllowed = vpShow and chartSec < 86400
+string vpLtf     = not vpAllowed or vpPrec == PR_CHART ? timeframe.period : vpPrec == PR_CUSTOM and timeframe.in_seconds(vpLtfIn) <= chartSec ? vpLtfIn : f_autoLtf(chartSec)
+[iH, iL, iO, iC, iV] = request.security_lower_tf(syminfo.tickerid, vpLtf, [high, low, open, close, volume], ignore_invalid_timeframe = true)
+
+var array<float>      vpH          = array.new<float>()   // máximos
+var array<float>      vpL          = array.new<float>()   // mínimos
+var array<float>      vpB          = array.new<float>()   // volumen comprador
+var array<float>      vpS          = array.new<float>()   // volumen vendedor
+var int               vpStart      = na
+var int               lastDayBars  = na
+var array<DayProfile> pastProfiles = array.new<DayProfile>()
+bool vpNewDay = timeframe.change("D")
+bool vpRecent = last_bar_time - time <= (vpPastDays + 3) * 86400000
+
+if vpAllowed
+    // Al empezar un día nuevo, el perfil del día que termina queda dibujado
+    if vpNewDay and not na(vpStart)
+        int dayBars = bar_index - vpStart
+        lastDayBars := dayBars
+        if vpPastDays > 0 and vpRecent and array.size(vpH) > 0
+            int w = math.max(3, int(math.round(dayBars * vpWidthPct / 100)))
+            array.push(pastProfiles, f_drawProfile(vpH, vpL, vpB, vpS, vpStart, bar_index - 1, w, math.max(w, 15), vpDataOn and vpDataPast))
+            while array.size(pastProfiles) > vpPastDays
+                f_deleteProfile(array.shift(pastProfiles))
+        array.clear(vpH)
+        array.clear(vpL)
+        array.clear(vpB)
+        array.clear(vpS)
+    if vpNewDay or na(vpStart)
+        vpStart := bar_index
+    // Datos de esta vela: velas inferiores si están disponibles; si no, la propia vela
+    int nI = na(iV) ? 0 : array.size(iV)
+    if vpPrec != PR_CHART and nI > 0
+        for k = 0 to nI - 1
+            float io = array.get(iO, k)
+            float ic = array.get(iC, k)
+            float iv = nz(array.get(iV, k))
+            array.push(vpH, array.get(iH, k))
+            array.push(vpL, array.get(iL, k))
+            array.push(vpB, ic > io ? iv : ic < io ? 0.0 : iv / 2)
+            array.push(vpS, ic < io ? iv : ic > io ? 0.0 : iv / 2)
+    else
+        float cv = nz(volume)
+        array.push(vpH, high)
+        array.push(vpL, low)
+        array.push(vpB, close > open ? cv : close < open ? 0.0 : cv / 2)
+        array.push(vpS, close < open ? cv : close > open ? 0.0 : cv / 2)
+
+// Perfil del día en curso: se rehace en cada tick (en vivo)
+var DayProfile curProfile = na
+if vpAllowed and barstate.islast and array.size(vpH) > 0 and not na(vpStart)
+    if not na(curProfile)
+        f_deleteProfile(curProfile)
+    int refBars = na(lastDayBars) ? bar_index - vpStart + 1 : lastDayBars
+    int futMax  = bar_index + 450 - vpStart
+    int w       = math.min(math.max(3, int(math.round(refBars * vpWidthPct / 100))), futMax)
+    curProfile := f_drawProfile(vpH, vpL, vpB, vpS, vpStart, bar_index, w, math.min(math.max(w, 15), futMax), vpDataOn)
 
 // ═════════════════════════════ TABLA DE REACCIÓN ═══════════════════════════
 var table stTbl = table.new(f_pos(statsPos), 3, 7, bgcolor = C_CARD, frame_color = C_GRID, frame_width = 1, border_color = C_GRID, border_width = 1)

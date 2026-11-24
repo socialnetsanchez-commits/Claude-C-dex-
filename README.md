@@ -2,19 +2,21 @@
 
 | Archivo | Para qué |
 |---|---|
-| [`CH_Zone_Signals.pine`](CH_Zone_Signals.pine) | **Principal: CH Zone Signals by Sanchez.** Zonas BUY/SELL de temporalidades superiores y order blocks swing, filtrados según su reacción medida en datos reales. |
+| [`CH_Zone_Signals.pine`](CH_Zone_Signals.pine) | **Principal: CH Zone Signals by Sanchez.** Zonas BUY/SELL de temporalidades superiores, order blocks swing, sesiones y perfil de liquidez de cada día (en vivo). |
 | [`CEP_Confirmation_Engine_Pro.pine`](CEP_Confirmation_Engine_Pro.pine) | Capa de 13 filtros para validar las señales de cualquier otro indicador. |
 
 > No es asesoramiento financiero. Ningún indicador garantiza resultados. Mide siempre fuera de muestra antes de arriesgar dinero.
 
 ## CH Zone Signals by Sanchez
 
-Muestra dos cosas:
+Muestra cuatro cosas:
 
 | Herramienta | Qué ves |
 |---|---|
 | **Zonas BUY / SELL** | Cajas **M15 SELL**, **M30 BUY**, **H1 SELL**... Solo se aceptan las que van a favor de la EMA 50 y de la estructura mayor de su temporalidad. Calculadas con velas cerradas, no repintan. |
 | **Order blocks swing** | Solo los que van a favor de la EMA 200 y de la estructura mayor (4 veces el swing) y tienen volumen por encima de la media en su origen. El texto **OB ★★★** indica cuántos criterios de calidad cumple. Los **OB A+** (borde grueso) están además dentro de una zona BUY/SELL de temporalidad superior. Cada OB lleva una línea discontinua en su **50 %** como referencia de entrada. |
+| **Sesiones** | Cajas de **Tokio**, **Londres** y **Nueva York** que crecen con el rango de cada sesión, con el nombre debajo. Cada una usa la hora de su ciudad, así que el horario de verano se ajusta solo. Se conservan los últimos 10 días (configurable). |
+| **Perfil de liquidez diario** | Un perfil por día, anclado al inicio del día: barras claras (compradores) y oscuras (vendedores), **POC** rojo y **VAH/VAL** discontinuos. Los días anteriores quedan dibujados (4 por defecto, hasta 7) y el día en curso se recalcula **en vivo** en cada tick. Opción **Datos compradores × vendedores**: escribe `28.16K × 37.96K` en cada fila y el total del día debajo. |
 
 Todo es personalizable: temporalidades de las zonas, filtros, invalidación, colores, transparencias, etiquetas, línea del 50 % y tabla de reacción.
 
@@ -26,6 +28,26 @@ Todo es personalizable: temporalidades de las zonas, filtros, invalidación, col
 - **Fondo del gráfico (oscuro o claro):** adapta los textos y la tabla para que se lean bien.
 
 Estos cambios son solo visuales: la detección y los filtros son idénticos a la versión anterior.
+
+### Cómo se calculan los datos de compradores y vendedores
+
+Por defecto el perfil usa **velas de temporalidad inferior**, por ejemplo velas de 1 minuto dentro de cada vela de 15 minutos, igual que el perfil de volumen de TradingView:
+
+- Cada vela inferior suma su volumen **en su propio rango de precio**.
+- Cuenta como **compradora** si cierra por encima de su apertura y como **vendedora** si cierra por debajo. Si es un doji, se reparte mitad y mitad.
+- Si un día antiguo no tiene datos inferiores disponibles, se usa la vela del gráfico como respaldo.
+
+Comprobación con 209 días reales de EUR/USD (un gráfico de 4 h con velas inferiores de 1 h):
+
+| | Resultado |
+|---|---|
+| Compras + ventas = volumen real del día | 209 de 209 días |
+| Días en que el método aproximado (vela entera) daba **otro POC** | 64 % (2,9 filas de media, hasta 17) |
+| Error medio del % comprador con el método aproximado | 14,6 puntos (hasta 45) |
+
+Por eso el método aproximado solo queda como opción (*Velas del gráfico*). En CFD como XAUUSD el volumen es de ticks; en futuros como NQ es volumen real.
+
+**Límite de dibujos:** TradingView permite 500 cajas por indicador y, si se superan, borra las más antiguas. Por eso las sesiones se limitan a los últimos días y los perfiles anteriores a 7.
 
 ### Cómo se eligieron los filtros (datos reales)
 
