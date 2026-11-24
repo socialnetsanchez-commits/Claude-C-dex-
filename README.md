@@ -83,6 +83,24 @@ Los OB A+ tienen muy pocos casos fuera de muestra (2). Por eso no se usan como f
 
 Los filtros actuales (EMA 50 + estructura mayor de su temporalidad) siguen siendo los mejores encontrados con estos datos.
 
+### Acierto por lado (BUY / SELL) y medida en R
+
+La tabla muestra ahora las zonas **BUY** y **SELL** por separado, con dos medidas:
+
+- **≥ 1,5 ATR:** el precio se aleja 1,5 ATR del gráfico tras el toque, antes de cerrar al otro lado.
+- **≥ 1,5 R:** el precio se aleja 1,5 veces el riesgo, entendiendo como riesgo entrar en el borde de la zona con el stop en el borde lejano (altura de la zona, mínimo 1 ATR).
+
+**En temporalidades bajas como M3, fíate de la columna R.** El ATR de 3 minutos es muy pequeño comparado con una zona de M15/H1, así que la medida en ATR sale inflada.
+
+Con los datos de prueba (no son M3 ni NQ):
+
+| Zonas | ≥ 1,5 ATR (dentro / fuera de muestra) | ≥ 1,5 R (dentro / fuera de muestra) |
+|---|---|---|
+| BUY | 74 % / 92 % (53 / 37) | 49 % / 54 % (47 / 28) |
+| SELL | 57 % / 57 % (21 / 14) | 32 % / 8 % (19 / 12) |
+
+Los tres mercados de prueba estuvieron sobre todo en tendencia alcista, lo que favorece a las zonas BUY. Hay pocos casos SELL. Para M3 y NQ, la cifra que cuenta es la que mida la tabla en tu gráfico.
+
 ### Comprobaciones hechas
 
 - Pasa el analizador sintáctico de Pine Script.

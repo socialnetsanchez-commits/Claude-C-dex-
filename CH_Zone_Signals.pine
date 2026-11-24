@@ -76,6 +76,7 @@ string obMidStyle  = input.string(ST_DOTTED, "", options = [ST_SOLID, ST_DASHED,
 // 3 · Medición de la reacción
 bool   statsOn  = input.bool(true, "Tabla de reacción", group = G_ST, tooltip = "Cuenta, tras el primer toque (el precio debe haber salido antes de la zona), cuántas veces el precio se aleja al menos X ATR antes de que una vela cierre al otro lado. Si ambas cosas pasan en la misma vela, cuenta como fallo.")
 float  reactAtr = input.float(1.5, "Reacción mínima (ATR ×)", minval = 0.25, step = 0.25, group = G_ST)
+float  reactR   = input.float(1.5, "Reacción mínima en R", minval = 0.25, step = 0.25, group = G_ST, tooltip = "R = riesgo de entrar en el borde de la zona con el stop en el borde lejano (altura de la zona, mínimo 1 ATR). Es la medida honesta en temporalidades bajas como M3: allí el ATR es pequeño frente a zonas de M15 / H1 y la medida en ATR sale inflada.")
 string statsPos = input.string(POS_BR, "Posición", options = [POS_TR, POS_TL, POS_BR, POS_BL], group = G_ST)
 
 // 4 · Estilo (solo afecta al aspecto, no a los cálculos)
@@ -122,6 +123,7 @@ type OB
     bool  touched  = false
     int   touchBar = na
     bool  resolved = false
+    bool  resolvedR = false
 
 // ═════════════════════════════ FUNCIONES ═══════════════════════════════════
 f_lineStyle(string s) => s == ST_SOLID ? line.style_solid : s == ST_DASHED ? line.style_dashed : line.style_dotted
@@ -275,9 +277,9 @@ f_zone(array<box> bxs, array<line> lns, array<label> lbs, bool ok, float top, fl
             array.push(lbs, label.new(rightT, mid, txt, xloc = xloc.bar_time, style = label.style_label_left, color = color.new(c, 10), textcolor = color.white, size = f_size(znTxtSize)))
     true
 
-// Mide la reacción de la zona MTF visible: primer toque tras salir de ella,
-// reacción ≥ reactAtr·ATR (gana) o cierre al otro lado (pierde). Además indica
-// si el gráfico ya la ha invalidado, para dejar de dibujarla.
+// Mide la reacción de la zona MTF visible: primer toque tras salir de ella y
+// reacción ≥ reactAtr·ATR (medida ATR) o ≥ reactR·R (medida R) antes de que una
+// vela cierre al otro lado (fallo). También indica si el gráfico ya la invalidó.
 f_trackZone(float top, float btm, int t, bool bull, bool enabled) =>
     var int   zt      = na
     var float zTop    = na
@@ -287,9 +289,12 @@ f_trackZone(float top, float btm, int t, bool bull, bool enabled) =>
     var bool  zTouch  = false
     var int   zTBar   = na
     var bool  zDone   = true
+    var bool  zDoneR  = true
     var bool  zBroken = false
     int  win   = 0
     int  loss  = 0
+    int  winR  = 0
+    int  lossR = 0
     bool first = false
     if enabled and not na(t) and not na(top) and not na(btm) and (na(zt) or t != zt or top != zTop or btm != zBtm)
         zt      := t
@@ -300,8 +305,9 @@ f_trackZone(float top, float btm, int t, bool bull, bool enabled) =>
         zTouch  := false
         zTBar   := na
         zDone   := false
+        zDoneR  := false
         zBroken := false
-    if enabled and not zDone
+    if enabled and not (zDone and zDoneR)
         bool inZone = high >= zBtm and low <= zTop
         if not zLeft and (bull ? low > zTop : high < zBtm)
             zLeft := true
@@ -310,17 +316,25 @@ f_trackZone(float top, float btm, int t, bool bull, bool enabled) =>
             zTBar  := bar_index
             first  := true
         if bull ? close < zBtm : close > zTop
-            if zTouch
+            if zTouch and not zDone
                 loss := 1
-            zDone := true
-        else if zTouch and bar_index > zTBar and (bull ? high >= zTop + reactAtr * zAtr : low <= zBtm - reactAtr * zAtr)
-            win   := 1
-            zDone := true
+            if zTouch and not zDoneR
+                lossR := 1
+            zDone  := true
+            zDoneR := true
+        else if zTouch and bar_index > zTBar
+            if not zDone and (bull ? high >= zTop + reactAtr * zAtr : low <= zBtm - reactAtr * zAtr)
+                win   := 1
+                zDone := true
+            float distR = reactR * math.max(zTop - zBtm, zAtr)
+            if not zDoneR and (bull ? high >= zTop + distR : low <= zBtm - distR)
+                winR   := 1
+                zDoneR := true
     // Invalidación en el gráfico (también después de una reacción)
     bool wick = znMitig == MIT_WICK
     if enabled and not na(zt) and not zBroken and (bull ? (wick ? low : close) < zBtm : (wick ? high : close) > zTop)
         zBroken := true
-    [win, loss, first, zBroken]
+    [win, loss, winR, lossR, first, zBroken]
 
 // Gestiona los OB activos: salida de la zona, primer toque, reacción y
 // mitigación. Devuelve los resultados de todos y, aparte, los de los OB A+.
@@ -329,6 +343,10 @@ f_manageOBs(array<OB> arr, string mitMode, bool delMit) =>
     int  losses  = 0
     int  winsA   = 0
     int  lossesA = 0
+    int  winsR   = 0
+    int  lossesR = 0
+    int  winsAR  = 0
+    int  lossAR  = 0
     bool firstT  = false
     bool firstA  = false
     int  n       = array.size(arr)
@@ -355,6 +373,11 @@ f_manageOBs(array<OB> arr, string mitMode, bool delMit) =>
                     losses     += 1
                     if o.aplus
                         lossesA += 1
+                if o.touched and not o.resolvedR
+                    o.resolvedR := true
+                    lossesR     += 1
+                    if o.aplus
+                        lossAR += 1
                 box.set_right(o.bx, bar_index)
                 if not na(o.mid)
                     line.set_x2(o.mid, bar_index)
@@ -371,10 +394,17 @@ f_manageOBs(array<OB> arr, string mitMode, bool delMit) =>
                         wins       += 1
                         if o.aplus
                             winsA += 1
+                if o.touched and not o.resolvedR and bar_index > o.touchBar
+                    float distR = reactR * math.max(o.top - o.btm, o.atrRef)
+                    if bull ? high >= o.top + distR : low <= o.btm - distR
+                        o.resolvedR := true
+                        winsR       += 1
+                        if o.aplus
+                            winsAR += 1
                 box.set_right(o.bx, bar_index)
                 if not na(o.mid)
                     line.set_x2(o.mid, bar_index)
-    [wins, losses, winsA, lossesA, firstT, firstA]
+    [wins, losses, winsA, lossesA, winsR, lossesR, winsAR, lossAR, firstT, firstA]
 
 // ¿Se solapa el OB con una zona de TF superior válida?
 f_ov(bool ok, float zTop, float zBtm, float top, float btm) => ok and not na(zTop) and not na(zBtm) and math.max(zBtm, btm) <= math.min(zTop, top)
@@ -387,15 +417,19 @@ f_overlaps(array<OB> arr, float top, float btm) =>
                 hit := true
     hit
 
-// Fila de la tabla: nombre, % de acierto (color por nivel) y toques resueltos
-f_statRow(table t, int r, string name, int w, int lo) =>
+// Celda de acierto: % (color por nivel) y número de toques resueltos
+f_rateCell(table t, int c, int r, int w, int lo) =>
     int    res  = w + lo
     float  rate = res > 0 ? 100.0 * w / res : na
-    string pct  = res > 0 ? str.tostring(rate, "0") + "%" : "—"
     color  pc   = res == 0 ? C_SUB : rate >= 60 ? C_GOOD : rate >= 45 ? C_MID : C_BAD
+    string txt  = res > 0 ? str.tostring(rate, "0") + "%  ·  " + str.tostring(res) : "—"
+    table.cell(t, c, r, txt, text_color = pc, text_size = size.small)
+
+// Fila de la tabla: nombre + acierto con la medida ATR y con la medida R
+f_statRow(table t, int r, string name, int w, int lo, int wR, int loR) =>
     table.cell(t, 0, r, name, text_color = C_TEXT, text_size = size.small, text_halign = text.align_left)
-    table.cell(t, 1, r, pct, text_color = pc, text_size = size.small)
-    table.cell(t, 2, r, str.tostring(res) + (res < 30 ? " ·  poca muestra" : ""), text_color = res < 30 ? C_MID : C_SUB, text_size = size.tiny, text_halign = text.align_right)
+    f_rateCell(t, 1, r, w, lo)
+    f_rateCell(t, 2, r, wR, loR)
 
 // ═════════════════════════════ 1 · ZONAS BUY / SELL (datos) ════════════════
 // Se calculan antes que los OB para poder detectar la confluencia (OB A+)
@@ -425,6 +459,10 @@ var int          obWins   = 0
 var int          obLosses = 0
 var int          obWinsA  = 0
 var int          obLossA  = 0
+var int          obWinsR  = 0
+var int          obLossR  = 0
+var int          obWinsAR = 0
+var int          obLossAR = 0
 var array<float> bufH     = array.new<float>()
 var array<float> bufL     = array.new<float>()
 var array<float> bufV     = array.new<float>()
@@ -437,12 +475,16 @@ if array.size(bufH) > BUF
     array.shift(bufV)
 
 // 1) Salidas, toques, reacciones y mitigaciones (antes de crear los de esta vela)
-[bWins, bLosses, bWinsA, bLossA, bFirstTouch, bFirstA] = f_manageOBs(bullOBs, obMitig, obDelMitig)
-[sWins, sLosses, sWinsA, sLossA, sFirstTouch, sFirstA] = f_manageOBs(bearOBs, obMitig, obDelMitig)
+[bWins, bLosses, bWinsA, bLossA, bWinsR, bLossR, bWinsAR, bLossAR, bFirstTouch, bFirstA] = f_manageOBs(bullOBs, obMitig, obDelMitig)
+[sWins, sLosses, sWinsA, sLossA, sWinsR, sLossR, sWinsAR, sLossAR, sFirstTouch, sFirstA] = f_manageOBs(bearOBs, obMitig, obDelMitig)
 obWins   += bWins + sWins
 obLosses += bLosses + sLosses
 obWinsA  += bWinsA + sWinsA
 obLossA  += bLossA + sLossA
+obWinsR  += bWinsR + sWinsR
+obLossR  += bLossR + sLossR
+obWinsAR += bWinsAR + sWinsAR
+obLossAR += bLossAR + sLossAR
 
 // 2) Nuevo OB en cada ruptura swing, solo si pasa los filtros
 bool newBullOB = false
@@ -471,19 +513,32 @@ if obShow and (obUp or obDn)
 
 // ═════════════════════════════ 1 · ZONAS BUY / SELL (medición y dibujo) ════
 // Medición de la reacción de cada zona visible (8 = 4 temporalidades × 2 lados)
-[w1s, l1s, f1s, x1s] = f_trackZone(z1BearTop, z1BearBtm, z1BearT, false, tf1Ok and znSellOn)
-[w1b, l1b, f1b, x1b] = f_trackZone(z1BullTop, z1BullBtm, z1BullT, true, tf1Ok and znBuyOn)
-[w2s, l2s, f2s, x2s] = f_trackZone(z2BearTop, z2BearBtm, z2BearT, false, tf2Ok and znSellOn)
-[w2b, l2b, f2b, x2b] = f_trackZone(z2BullTop, z2BullBtm, z2BullT, true, tf2Ok and znBuyOn)
-[w3s, l3s, f3s, x3s] = f_trackZone(z3BearTop, z3BearBtm, z3BearT, false, tf3Ok and znSellOn)
-[w3b, l3b, f3b, x3b] = f_trackZone(z3BullTop, z3BullBtm, z3BullT, true, tf3Ok and znBuyOn)
-[w4s, l4s, f4s, x4s] = f_trackZone(z4BearTop, z4BearBtm, z4BearT, false, tf4Ok and znSellOn)
-[w4b, l4b, f4b, x4b] = f_trackZone(z4BullTop, z4BullBtm, z4BullT, true, tf4Ok and znBuyOn)
+[w1s, l1s, r1s, q1s, f1s, x1s] = f_trackZone(z1BearTop, z1BearBtm, z1BearT, false, tf1Ok and znSellOn)
+[w1b, l1b, r1b, q1b, f1b, x1b] = f_trackZone(z1BullTop, z1BullBtm, z1BullT, true, tf1Ok and znBuyOn)
+[w2s, l2s, r2s, q2s, f2s, x2s] = f_trackZone(z2BearTop, z2BearBtm, z2BearT, false, tf2Ok and znSellOn)
+[w2b, l2b, r2b, q2b, f2b, x2b] = f_trackZone(z2BullTop, z2BullBtm, z2BullT, true, tf2Ok and znBuyOn)
+[w3s, l3s, r3s, q3s, f3s, x3s] = f_trackZone(z3BearTop, z3BearBtm, z3BearT, false, tf3Ok and znSellOn)
+[w3b, l3b, r3b, q3b, f3b, x3b] = f_trackZone(z3BullTop, z3BullBtm, z3BullT, true, tf3Ok and znBuyOn)
+[w4s, l4s, r4s, q4s, f4s, x4s] = f_trackZone(z4BearTop, z4BearBtm, z4BearT, false, tf4Ok and znSellOn)
+[w4b, l4b, r4b, q4b, f4b, x4b] = f_trackZone(z4BullTop, z4BullBtm, z4BullT, true, tf4Ok and znBuyOn)
 
-var int znWins   = 0
-var int znLosses = 0
-znWins   += w1s + w1b + w2s + w2b + w3s + w3b + w4s + w4b
-znLosses += l1s + l1b + l2s + l2b + l3s + l3b + l4s + l4b
+// Acumulados por lado (BUY / SELL) y por medida (ATR / R)
+var int znWinB  = 0
+var int znLossB = 0
+var int znWinS  = 0
+var int znLossS = 0
+var int znWinBR  = 0
+var int znLossBR = 0
+var int znWinSR  = 0
+var int znLossSR = 0
+znWinB   += w1b + w2b + w3b + w4b
+znLossB  += l1b + l2b + l3b + l4b
+znWinS   += w1s + w2s + w3s + w4s
+znLossS  += l1s + l2s + l3s + l4s
+znWinBR  += r1b + r2b + r3b + r4b
+znLossBR += q1b + q2b + q3b + q4b
+znWinSR  += r1s + r2s + r3s + r4s
+znLossSR += q1s + q2s + q3s + q4s
 bool zoneSellTouch = f1s or f2s or f3s or f4s
 bool zoneBuyTouch  = f1b or f2b or f3b or f4b
 
@@ -511,17 +566,20 @@ if znShow and barstate.islast
     f_zone(znBoxes, znLines, znLabels, tf4Ok and znBuyOn and not x4b, z4BullTop, z4BullBtm, z4BullT, "▲ " + f_tfLabel(tf4) + " BUY", buyCol, true)
 
 // ═════════════════════════════ TABLA DE REACCIÓN ═══════════════════════════
-var table stTbl = table.new(f_pos(statsPos), 3, 5, bgcolor = C_CARD, frame_color = C_GRID, frame_width = 1, border_color = C_GRID, border_width = 1)
+var table stTbl = table.new(f_pos(statsPos), 3, 7, bgcolor = C_CARD, frame_color = C_GRID, frame_width = 1, border_color = C_GRID, border_width = 1)
 if statsOn and barstate.isfirst
     table.merge_cells(stTbl, 0, 0, 2, 0)
+    table.merge_cells(stTbl, 0, 6, 2, 6)
 if statsOn and barstate.islast and (obShow or znShow)
-    table.cell(stTbl, 0, 0, "CH Zone Signals  ·  by Sanchez", text_color = C_TEXT, bgcolor = C_HEAD, text_size = size.small, text_halign = text.align_center)
-    table.cell(stTbl, 0, 1, "Reacción ≥ " + str.tostring(reactAtr) + " ATR", text_color = C_SUB, bgcolor = C_HEAD, text_size = size.tiny, text_halign = text.align_left)
-    table.cell(stTbl, 1, 1, "acierto", text_color = C_SUB, bgcolor = C_HEAD, text_size = size.tiny)
-    table.cell(stTbl, 2, 1, "toques", text_color = C_SUB, bgcolor = C_HEAD, text_size = size.tiny, text_halign = text.align_right)
-    f_statRow(stTbl, 2, "Zonas BUY / SELL", znWins, znLosses)
-    f_statRow(stTbl, 3, "OB swing", obWins, obLosses)
-    f_statRow(stTbl, 4, "OB A+", obWinsA, obLossA)
+    table.cell(stTbl, 0, 0, "CH Zone Signals  ·  by Sanchez  ·  " + timeframe.period, text_color = C_TEXT, bgcolor = C_HEAD, text_size = size.small, text_halign = text.align_center)
+    table.cell(stTbl, 0, 1, "Reacción", text_color = C_SUB, bgcolor = C_HEAD, text_size = size.tiny, text_halign = text.align_left)
+    table.cell(stTbl, 1, 1, "≥ " + str.tostring(reactAtr) + " ATR", text_color = C_SUB, bgcolor = C_HEAD, text_size = size.tiny)
+    table.cell(stTbl, 2, 1, "≥ " + str.tostring(reactR) + " R", text_color = C_SUB, bgcolor = C_HEAD, text_size = size.tiny)
+    f_statRow(stTbl, 2, "▲ Zonas BUY", znWinB, znLossB, znWinBR, znLossBR)
+    f_statRow(stTbl, 3, "▼ Zonas SELL", znWinS, znLossS, znWinSR, znLossSR)
+    f_statRow(stTbl, 4, "OB swing", obWins, obLosses, obWinsR, obLossR)
+    f_statRow(stTbl, 5, "OB A+", obWinsA, obLossA, obWinsAR, obLossAR)
+    table.cell(stTbl, 0, 6, "% acierto · toques resueltos   (menos de 30 = poca muestra)", text_color = C_SUB, text_size = size.tiny, text_halign = text.align_left)
 
 // ═════════════════════════════ ALERTAS ═════════════════════════════════════
 alertcondition(zoneBuyTouch, "Precio toca zona BUY", "CH Zones: {{ticker}} vuelve a una zona BUY ({{close}})")
