@@ -2,12 +2,12 @@
 
 | Archivo | Para qué |
 |---|---|
-| [`SMC_Confirm_Pro.pine`](SMC_Confirm_Pro.pine) | **Principal.** Zonas BUY/SELL de temporalidades superiores y order blocks swing, filtrados según su reacción medida en datos reales. |
+| [`CH_Zone_Signals.pine`](CH_Zone_Signals.pine) | **Principal: CH Zone Signals by Sanchez.** Zonas BUY/SELL de temporalidades superiores y order blocks swing, filtrados según su reacción medida en datos reales. |
 | [`CEP_Confirmation_Engine_Pro.pine`](CEP_Confirmation_Engine_Pro.pine) | Capa de 13 filtros para validar las señales de cualquier otro indicador. |
 
 > No es asesoramiento financiero. Ningún indicador garantiza resultados. Mide siempre fuera de muestra antes de arriesgar dinero.
 
-## SMC Confirm Pro
+## CH Zone Signals by Sanchez
 
 Muestra dos cosas:
 
@@ -16,7 +16,16 @@ Muestra dos cosas:
 | **Zonas BUY / SELL** | Cajas **M15 SELL**, **M30 BUY**, **H1 SELL**... Solo se aceptan las que van a favor de la EMA 50 y de la estructura mayor de su temporalidad. Calculadas con velas cerradas, no repintan. |
 | **Order blocks swing** | Solo los que van a favor de la EMA 200 y de la estructura mayor (4 veces el swing) y tienen volumen por encima de la media en su origen. El texto **OB ★★★** indica cuántos criterios de calidad cumple. Los **OB A+** (borde grueso) están además dentro de una zona BUY/SELL de temporalidad superior. Cada OB lleva una línea discontinua en su **50 %** como referencia de entrada. |
 
-Todo es personalizable: temporalidades de las zonas, filtros, mitigación, colores, textos, línea del 50 % y tabla de reacción.
+Todo es personalizable: temporalidades de las zonas, filtros, invalidación, colores, transparencias, etiquetas, línea del 50 % y tabla de reacción.
+
+**Diseño:**
+
+- **Zonas:** relleno suave, borde de entrada marcado (por donde llega el precio), borde lejano punteado y una etiqueta tipo píldora a la derecha (`▼ H1 SELL`, `▲ M30 BUY`).
+- **OB:** relleno suave del color de su dirección y etiqueta `OB ★★★` arriba a la derecha. Los **A+** llevan borde y texto dorados.
+- **Tabla:** tipo tarjeta con el título *CH Zone Signals · by Sanchez*. El acierto aparece en verde (≥ 60 %), ámbar (45–60 %) o rojo (< 45 %).
+- **Fondo del gráfico (oscuro o claro):** adapta los textos y la tabla para que se lean bien.
+
+Estos cambios son solo visuales: la detección y los filtros son idénticos a la versión anterior.
 
 ### Cómo se eligieron los filtros (datos reales)
 
@@ -57,6 +66,22 @@ Los OB A+ tienen muy pocos casos fuera de muestra (2). Por eso no se usan como f
 - **El toque inmediato inflaba la estadística:** un OB recién creado podía contar como "tocado" sin que el precio hubiera salido antes de la zona. Ahora el toque solo cuenta tras salir por completo, y lo mismo vale para las zonas.
 - **Las zonas no se medían:** ahora tienen su propia medición.
 - **La estructura mayor no seguía al swing:** ahora es 4 veces la longitud del swing y se ajusta si cambias esa longitud.
+
+### Tercera ronda: errores y pruebas de las zonas
+
+**Error corregido:** una zona de temporalidad superior solo desaparecía cuando cerraba la vela de esa temporalidad. Mientras tanto, en tu gráfico el precio podía haber cerrado ya al otro lado y la zona seguía dibujada como válida. Ahora desaparece en cuanto tu gráfico la invalida (por cierre o por mecha, según el ajuste *Invalidación*).
+
+**Ideas probadas para subir la reacción de las zonas (todas descartadas):**
+
+| Idea | Resultado | Decisión |
+|---|---|---|
+| EMA 200 del gráfico a favor | Sin efecto: las zonas filtradas ya la cumplen | Descartada |
+| Barrido de liquidez | 60 % frente a 69 % dentro; 83 % frente a 74 % fuera | Descartada: el efecto se invierte entre tramos |
+| Solape con zona de otra temporalidad | Muy pocos casos (5 y 9) | Descartada |
+| Vela de ruptura ≥ 1 ATR | +3 a 4 puntos con poca muestra | Descartada: probable ruido |
+| Solo zonas grandes (> 1 ATR) | Sube el porcentaje, pero en múltiplos del riesgo no mejora | Descartada: sería engañoso (exige un stop mayor) |
+
+Los filtros actuales (EMA 50 + estructura mayor de su temporalidad) siguen siendo los mejores encontrados con estos datos.
 
 ### Comprobaciones hechas
 
